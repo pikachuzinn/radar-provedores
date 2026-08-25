@@ -63,6 +63,12 @@ INTERVALO_PAGINACAO: float = 2.0
 # O cache evita chamadas repetidas à API para o mesmo place_id.
 CAMINHO_CACHE: str = ".cache_detalhes.json"
 
+# A cada quantas entradas novas o cache é gravado em disco durante a busca.
+# Gravar a cada entrada reescreve o arquivo inteiro N vezes; gravar apenas no
+# final arrisca perder tudo se a execução for interrompida. Este valor é o
+# meio-termo — o cache também é sempre gravado ao fim da busca.
+INTERVALO_GRAVACAO_CACHE: int = 25
+
 # ---------------------------------------------------------------------------
 # Exportação
 # ---------------------------------------------------------------------------
@@ -76,8 +82,22 @@ COLUNAS_SAIDA: dict[str, str] = {
     "endereco": "Endereço",
     "telefone": "Telefone",
     "site": "Site",
+    "distancia_km": "Distância (km)",
     "avaliacao": "Avaliação",
     "total_avaliacoes": "Nº de Avaliações",
     "status": "Status",
+    "latitude": "Latitude",
+    "longitude": "Longitude",
     "place_id": "Place ID (Google)",
 }
+
+# ---------------------------------------------------------------------------
+# Filtro de distância
+# ---------------------------------------------------------------------------
+
+# O parâmetro `radius` da Places Text Search é um *viés* de relevância, não um
+# filtro rígido: a API pode devolver estabelecimentos bem além do raio pedido.
+# Com RAIO_ESTRITO = True, resultados acima do raio são descartados.
+# Com False (padrão), tudo é mantido e a coluna "Distância (km)" permite ao
+# analista filtrar manualmente na planilha, sem perder dado nenhum.
+RAIO_ESTRITO: bool = False

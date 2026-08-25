@@ -9,13 +9,15 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 - Aceita endereço textual ou coordenadas geográficas como entrada
 - Busca provedores num raio configurável (padrão: 5 km)
 - Extrai: nome, endereço, telefone, site e avaliação de cada empresa
+- **Coordenadas e distância em km** de cada provedor até o centro da busca — permite ordenar a planilha por proximidade e descartar resultados fora da área de interesse
 - Deduplica resultados automaticamente por `place_id`
 - **Cache local de Place Details** — evita chamadas repetidas à API para o mesmo estabelecimento, reduzindo custo em buscas consecutivas na mesma região
 - Exporta para **CSV** (padrão) ou **Excel (.xlsx)** com formatação profissional
 - **Camada de serviço** (`service.py`) sem dependência de I/O, pronta para integração com Flask, FastAPI ou GUI
 - Interface de linha de comando completa ou modo interativo
-- **Chave de API nunca exposta em logs** — filtro de logging automático mascara a chave em qualquer saída de debug
+- **Chave de API nunca exposta em logs** — filtro de logging automático mascara a chave em qualquer saída de debug, inclusive nos logs de bibliotecas de terceiros
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
+- **Suíte de testes** com 60 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -117,6 +119,10 @@ Para evitar uso não autorizado caso a chave vaze:
 
 Independentemente do método usado, a chave **nunca aparecerá em logs ou saída de debug** — o filtro `_FiltroChaveAPI` em `buscador.py` mascara qualquer ocorrência literal da chave, substituindo-a por `***API_KEY***`.
 
+O filtro é instalado nos **handlers** do logger raiz, e não apenas no logger raiz em si. A distinção importa: no módulo `logging`, um filtro registrado em um *Logger* só é aplicado aos registros emitidos naquele logger — os que sobem por propagação dos loggers filhos passam direto. Como cada módulo do projeto usa `getLogger(__name__)`, um filtro somente no raiz nunca veria essas mensagens. Instalado nos handlers, ele alcança tudo que chega à saída, incluindo logs de `requests`/`urllib3`.
+
+> **Consequência prática:** configure o logging **antes** de instanciar `BuscadorProvedores`. Handlers criados depois não recebem o filtro.
+
 ---
 
 ## Custo estimado das APIs
@@ -214,7 +220,15 @@ resultado = executar_busca(
 print(resultado["total"])      # ex: 12
 print(resultado["arquivos"])   # ['/caminho/provedores_20240901.csv']
 print(resultado["erro"])       # None se tudo correu bem
+
+# Cada provedor traz também coordenadas e distância até o centro da busca
+print(resultado["provedores"][0]["distancia_km"])   # ex: 2.41
+print(resultado["provedores"][0]["latitude"])       # ex: -26.3044
 ```
+
+`executar_busca()` **nunca levanta exceção**: qualquer problema — chave ausente,
+endereço inválido, falha de rede, erro de exportação — volta preenchido na chave
+`"erro"`. Isso permite que CLI, API web e GUI tratem falhas do mesmo jeito.
 
 ### Exemplo com Flask
 
@@ -257,6 +271,24 @@ def ao_clicar_buscar():
     label.config(text=f"{resultado['total']} provedores encontrados.")
 ```
 
+### Usando a classe diretamente
+
+Se precisar de controle fino sobre as etapas, use `BuscadorProvedores` como
+context manager — ele grava o cache pendente, fecha a sessão HTTP e remove o
+filtro de log ao sair do bloco:
+
+```python
+from buscador import BuscadorProvedores
+
+with BuscadorProvedores(api_key="SUA_CHAVE") as buscador:
+    lat, lng = buscador.geocodificar("Itajaí, SC")
+    provedores = buscador.buscar_todos(lat, lng, raio=8000)
+```
+
+> Em processos de vida longa (servidor web, GUI) isso não é opcional. Cada
+> instância registra um filtro no logging global; sem o encerramento, eles se
+> acumulam a cada requisição e toda mensagem de log passa por todos eles.
+
 ---
 
 ## Estrutura do projeto
@@ -269,7 +301,18 @@ buscador_provedores/
 ├── buscador.py        # Geocodificação + Places API + filtro de segurança de logs
 ├── exportador.py      # Exportação para CSV e Excel (.xlsx)
 ├── cache.py           # Cache local de Place Details em JSON
+├── geo.py             # Distância entre coordenadas (Haversine)
 ├── config.py          # Todas as configurações centralizadas
+│
+├── conftest.py        # Fixtures da suíte de testes (dublês de requests)
+├── pytest.ini         # Configuração do pytest
+├── tests/             # Suíte de testes — não usa rede nem chave de API
+│   ├── test_geo.py
+│   ├── test_cache.py
+│   ├── test_buscador.py
+│   ├── test_exportador.py
+│   ├── test_filtro_log.py
+│   └── test_service.py
 │
 ├── requirements.txt   # Dependências Python
 ├── .env.example       # Modelo do arquivo de variáveis de ambiente
@@ -319,6 +362,8 @@ Todas as configurações ajustáveis estão em `config.py`:
 | `TERMOS_DE_BUSCA` | Palavras-chave usadas na busca | 5 termos pré-definidos |
 | `MAX_PAGINAS` | Máx. páginas de resultado por termo | `3` (= 60 resultados) |
 | `CAMINHO_CACHE` | Arquivo de cache de Place Details | `".cache_detalhes.json"` |
+| `INTERVALO_GRAVACAO_CACHE` | A cada quantas entradas novas o cache vai ao disco | `25` |
+| `RAIO_ESTRITO` | Descarta resultados fora do raio pedido | `False` |
 | `DIRETORIO_SAIDA` | Pasta padrão para os arquivos gerados | `"resultados"` |
 | `CAMPOS_DETALHES` | Campos solicitados ao Place Details | Nome, endereço, telefone, site, avaliação |
 
@@ -332,10 +377,48 @@ rm .cache_detalhes.json
 
 ---
 
+## Testes
+
+A suíte cobre geocodificação, paginação, cache, deduplicação, filtro de distância,
+mascaramento da chave de API e exportação. **Nenhum teste acessa a rede ou usa uma
+chave real** — a sessão HTTP é substituída por um dublê que devolve respostas
+pré-programadas e registra cada chamada.
+
+```bash
+pip install pytest
+python -m pytest
+```
+
+Para ver o nome de cada caso:
+
+```bash
+python -m pytest -v
+```
+
+Para rodar apenas um arquivo:
+
+```bash
+python -m pytest tests/test_buscador.py
+```
+
+### O que a suíte protege
+
+| Arquivo | Cobertura |
+|---|---|
+| `test_geo.py` | Haversine: distâncias conhecidas, simetria, cruzamento do equador |
+| `test_cache.py` | Arquivo ausente, JSON corrompido, formato inesperado, acentuação |
+| `test_buscador.py` | Status da API, deduplicação, gravação em lote do cache, filtro de raio, callback de progresso |
+| `test_filtro_log.py` | Mascaramento da chave vinda de loggers filhos e remoção do filtro ao encerrar |
+| `test_exportador.py` | Ordem das colunas, BOM do CSV, campos ausentes, formatação do Excel |
+| `test_service.py` | Contrato de retorno, caminhos de erro, ausência de vazamento entre chamadas |
+
+---
+
 ## Limitações conhecidas
 
 - **Cobertura do Google Maps**: empresas sem perfil no Google Maps não aparecem. Regiões menos urbanizadas tendem a ter menos cadastros.
 - **Máximo de 60 resultados por termo de busca**: a Places API limita a 3 páginas de 20 itens. Adicionar termos em `TERMOS_DE_BUSCA` amplia o alcance.
+- **`radius` é um viés, não um filtro**: a Places Text Search usa o raio para ordenar por relevância, mas devolve estabelecimentos bem além dele. Use a coluna *Distância (km)* para filtrar na planilha, ou defina `RAIO_ESTRITO = True` em `config.py` para descartar automaticamente — o descarte ocorre antes da chamada de Place Details, então também reduz custo.
 - **Raio máximo da Places API**: 50.000 metros (50 km). Valores maiores são silenciosamente ignorados pela API.
 - **Dados desatualizados**: telefone e site dependem do que está cadastrado no Google Maps pela própria empresa.
 - **Rate limiting**: pausas automáticas entre chamadas para respeitar os limites. Buscas com muitos resultados podem levar alguns minutos.

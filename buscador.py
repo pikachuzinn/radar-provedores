@@ -7,8 +7,19 @@ Encapsula todas as chamadas à Google Places API:
   3. Place Details para enriquecer cada resultado com telefone, site, etc.
 
 Segurança: a chave de API nunca é incluída em mensagens de log. Um filtro
-de logging (_FiltroChaveAPI) é registrado automaticamente no logger raiz ao
-instanciar BuscadorProvedores, mascarando a chave em qualquer log acidental.
+de logging (_FiltroChaveAPI) é instalado nos handlers do logger raiz ao
+instanciar BuscadorProvedores, mascarando a chave em qualquer log acidental —
+inclusive nos emitidos por bibliotecas de terceiros, como requests/urllib3.
+
+Ciclo de vida: use o buscador como context manager sempre que possível.
+
+    with BuscadorProvedores(api_key=chave) as buscador:
+        lat, lng = buscador.geocodificar("Itajaí, SC")
+        provedores = buscador.buscar_todos(lat, lng, raio=5000)
+
+Ao sair do bloco, o cache pendente é gravado, a sessão HTTP é fechada e o
+filtro de log é removido. Sem isso, processos de vida longa (servidor web,
+GUI) acumulam um filtro por instância criada.
 """
 
 import logging
@@ -22,13 +33,16 @@ from config import (
     CAMINHO_CACHE,
     CAMPOS_DETALHES,
     INTERVALO_ENTRE_CHAMADAS,
+    INTERVALO_GRAVACAO_CACHE,
     INTERVALO_PAGINACAO,
     MAX_PAGINAS,
+    RAIO_ESTRITO,
     TERMOS_DE_BUSCA,
     URL_DETALHES,
     URL_GEOCODING,
     URL_TEXT_SEARCH,
 )
+from geo import distancia_km
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +69,10 @@ class _FiltroChaveAPI(logging.Filter):
 
     Substitui ocorrências literais da chave pelo marcador '***API_KEY***',
     evitando que a chave vaze em arquivos de log ou saída de debug.
+
+    Só valores de texto são tocados. Números são devolvidos intactos: convertê-los
+    para str quebraria a formatação preguiçosa do logging — um argumento inteiro
+    virado string faz `"%d" % ("20",)` levantar TypeError.
     """
 
     _MASCARA = "***API_KEY***"
@@ -65,17 +83,53 @@ class _FiltroChaveAPI(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if self._chave:
-            record.msg = str(record.msg).replace(self._chave, self._MASCARA)
+            record.msg = self._mascarar(record.msg)
             record.args = self._mascarar_args(record.args)
         return True
+
+    def _mascarar(self, valor):
+        """Mascara a chave se o valor for texto; qualquer outro tipo passa intacto."""
+        if isinstance(valor, str):
+            return valor.replace(self._chave, self._MASCARA)
+        return valor
 
     def _mascarar_args(self, args):
         """Percorre os argumentos de formatação do log e mascara a chave."""
         if args is None:
             return args
         if isinstance(args, dict):
-            return {k: str(v).replace(self._chave, self._MASCARA) for k, v in args.items()}
-        return tuple(str(a).replace(self._chave, self._MASCARA) for a in args)
+            return {chave: self._mascarar(valor) for chave, valor in args.items()}
+        return tuple(self._mascarar(arg) for arg in args)
+
+
+def _instalar_filtro_chave(filtro: logging.Filter) -> list:
+    """
+    Instala o filtro de mascaramento nos handlers do logger raiz.
+
+    Detalhe crítico do módulo logging: um filtro adicionado a um *Logger* só é
+    aplicado aos registros emitidos naquele logger — não aos que chegam a ele por
+    propagação dos loggers filhos. Como todo módulo deste projeto usa
+    `getLogger(__name__)`, um filtro instalado apenas no logger raiz nunca veria
+    essas mensagens, e a chave passaria sem máscara. Filtros de *Handler*, ao
+    contrário, são aplicados a tudo que chega ao handler, venha de onde vier.
+
+    Por isso instalamos nos handlers do raiz — e também no logger raiz em si,
+    para cobrir chamadas diretas a logging.info() e afins.
+
+    Limitação conhecida: handlers criados *depois* desta chamada não recebem o
+    filtro. Configure o logging antes de instanciar BuscadorProvedores.
+
+    Args:
+        filtro: Instância de _FiltroChaveAPI a ser instalada.
+
+    Returns:
+        Lista dos objetos onde o filtro foi instalado, para remoção em fechar().
+    """
+    raiz = logging.getLogger()
+    alvos: list = [raiz, *raiz.handlers]
+    for alvo in alvos:
+        alvo.addFilter(filtro)
+    return alvos
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +163,57 @@ class BuscadorProvedores:
         self._caminho_cache = caminho_cache
         self._cache: dict = carregar_cache(caminho_cache)
 
-        # Registra o filtro de segurança no logger raiz para mascarar a chave
-        # em qualquer mensagem de log emitida enquanto este objeto existir
+        # Entradas adicionadas ao cache desde a última gravação em disco.
+        # Gravar a cada nova entrada reescreveria o arquivo JSON inteiro a cada
+        # place_id — custo O(n²) em buscas grandes.
+        self._entradas_nao_gravadas: int = 0
+
+        # Instala o filtro de segurança para mascarar a chave em qualquer
+        # mensagem de log emitida enquanto este objeto existir
         self._filtro_log = _FiltroChaveAPI(api_key)
-        logging.getLogger().addFilter(self._filtro_log)
+        self._alvos_filtro = _instalar_filtro_chave(self._filtro_log)
+
+    # ------------------------------------------------------------------
+    # Ciclo de vida
+    # ------------------------------------------------------------------
+
+    def gravar_cache(self) -> None:
+        """
+        Persiste em disco as entradas de cache ainda não gravadas.
+
+        Não faz nada se não houver pendências, evitando escrita desnecessária.
+        """
+        if self._entradas_nao_gravadas == 0:
+            return
+        salvar_cache(self._cache, self._caminho_cache)
+        self._entradas_nao_gravadas = 0
+
+    def fechar(self) -> None:
+        """
+        Libera os recursos do buscador.
+
+        Grava o cache pendente, fecha a sessão HTTP e — importante — remove o
+        filtro de log dos alvos onde foi instalado. Sem essa remoção, cada
+        instância criada deixa um filtro pendurado no logging global: num
+        servidor web que instancia o buscador por requisição, eles se acumulam
+        indefinidamente e cada mensagem de log passa por todos eles.
+
+        Seguro chamar mais de uma vez.
+        """
+        self.gravar_cache()
+
+        for alvo in self._alvos_filtro:
+            alvo.removeFilter(self._filtro_log)
+        self._alvos_filtro = []
+
+        self._sessao.close()
+
+    def __enter__(self) -> "BuscadorProvedores":
+        return self
+
+    def __exit__(self, exc_type, exc_valor, traceback) -> bool:
+        self.fechar()
+        return False  # não suprime exceções
 
     # ------------------------------------------------------------------
     # Geocodificação
@@ -287,6 +388,11 @@ class BuscadorProvedores:
             return self._cache[place_id]
 
         # --- Chama a API ---
+        # A pausa de rate limit vive aqui, e não no laço de buscar_todos, para
+        # não penalizar os acertos de cache: dormir antes de uma leitura que
+        # nunca toca a rede anula justamente o ganho que o cache existe para dar.
+        time.sleep(INTERVALO_ENTRE_CHAMADAS)
+
         params = {
             "place_id": place_id,
             "fields": ",".join(CAMPOS_DETALHES),
@@ -318,8 +424,12 @@ class BuscadorProvedores:
         resultado = dados.get("result", {})
 
         # --- Salva no cache ---
+        # A gravação em disco é feita em lote (ver gravar_cache) para não
+        # reescrever o arquivo inteiro a cada place_id consultado.
         self._cache[place_id] = resultado
-        salvar_cache(self._cache, self._caminho_cache)
+        self._entradas_nao_gravadas += 1
+        if self._entradas_nao_gravadas >= INTERVALO_GRAVACAO_CACHE:
+            self.gravar_cache()
 
         return resultado
 
@@ -354,12 +464,14 @@ class BuscadorProvedores:
                     "total_acumulado"  (int)  — total geral até o momento
 
         Returns:
-            Lista de dicts com os campos padronizados definidos em COLUNAS_SAIDA.
+            Lista de dicts com os campos padronizados definidos em COLUNAS_SAIDA,
+            incluindo latitude, longitude e distancia_km em relação ao centro.
         """
         notificar = callback_progresso or (lambda _: None)
         total_etapas = len(TERMOS_DE_BUSCA)
         ids_vistos: set[str] = set()
         provedores: list[dict] = []
+        raio_km = raio / 1000
 
         for i, termo in enumerate(TERMOS_DE_BUSCA, start=1):
             # Notifica o início da etapa (novos_provedores=None = ainda buscando)
@@ -390,10 +502,22 @@ class BuscadorProvedores:
                     continue
 
                 ids_vistos.add(place_id)
-                time.sleep(INTERVALO_ENTRE_CHAMADAS)
+
+                # O parâmetro `radius` da Text Search é um viés de relevância,
+                # não um filtro rígido — a API devolve resultados além do raio.
+                # Descartamos aqui, ANTES de gastar uma chamada de Place Details.
+                distancia = self._distancia_do_centro(item, lat, lng)
+                if RAIO_ESTRITO and distancia is not None and distancia > raio_km:
+                    logger.debug(
+                        "Descartado '%s': %.2f km do centro (raio de %.2f km).",
+                        item.get("name", place_id), distancia, raio_km,
+                    )
+                    continue
 
                 detalhes = self.obter_detalhes(place_id)
-                provedores.append(self._normalizar(item, detalhes, place_id))
+                provedores.append(
+                    self._normalizar(item, detalhes, place_id, distancia)
+                )
                 novos += 1
 
             # Notifica o resultado da etapa com o número de novos encontrados
@@ -405,6 +529,10 @@ class BuscadorProvedores:
                 "total_acumulado": len(provedores),
             })
 
+        # Garante que nenhuma entrada de cache obtida nesta busca se perca,
+        # mesmo que o total não tenha atingido INTERVALO_GRAVACAO_CACHE.
+        self.gravar_cache()
+
         return provedores
 
     # ------------------------------------------------------------------
@@ -412,10 +540,51 @@ class BuscadorProvedores:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _normalizar(bruto: dict, detalhes: dict, place_id: str) -> dict:
+    def _coordenadas(bruto: dict) -> tuple[float | None, float | None]:
+        """
+        Extrai (latitude, longitude) do bloco geometry.location do resultado bruto.
+
+        As coordenadas já vêm na resposta da Text Search — não custam nenhuma
+        chamada extra à API.
+
+        Returns:
+            Tupla (lat, lng), ou (None, None) se o resultado não trouxer geometria.
+        """
+        local = bruto.get("geometry", {}).get("location", {})
+        return local.get("lat"), local.get("lng")
+
+    @classmethod
+    def _distancia_do_centro(
+        cls, bruto: dict, lat_centro: float, lng_centro: float
+    ) -> float | None:
+        """
+        Distância em km entre o centro da busca e o estabelecimento.
+
+        Returns:
+            Distância em km, ou None se o resultado não trouxer coordenadas.
+        """
+        lat, lng = cls._coordenadas(bruto)
+        if lat is None or lng is None:
+            return None
+        return distancia_km(lat_centro, lng_centro, lat, lng)
+
+    @classmethod
+    def _normalizar(
+        cls,
+        bruto: dict,
+        detalhes: dict,
+        place_id: str,
+        distancia: float | None = None,
+    ) -> dict:
         """
         Combina dados brutos da Text Search com os detalhes do Place Details
         em um dict com chaves padronizadas.
+
+        Args:
+            bruto: Item retornado pela Text Search.
+            detalhes: Resposta do Place Details (pode ser {} se a chamada falhou).
+            place_id: Identificador do estabelecimento no Google.
+            distancia: Distância em km até o centro da busca, se já calculada.
         """
         # Preferimos os dados de Place Details por serem mais completos;
         # usamos os dados brutos como fallback.
@@ -426,6 +595,8 @@ class BuscadorProvedores:
             "CLOSED_PERMANENTLY": "Fechado permanentemente",
         }
 
+        lat, lng = cls._coordenadas(bruto)
+
         return {
             "nome": detalhes.get("name") or bruto.get("name", ""),
             "endereco": (
@@ -434,10 +605,15 @@ class BuscadorProvedores:
             ),
             "telefone": detalhes.get("formatted_phone_number", ""),
             "site": detalhes.get("website", ""),
+            # Campo vazio (e não 0) quando não há coordenadas: numa planilha,
+            # um zero seria lido como "no mesmo endereço do centro da busca".
+            "distancia_km": distancia if distancia is not None else "",
             "avaliacao": detalhes.get("rating", bruto.get("rating", "")),
             "total_avaliacoes": detalhes.get(
                 "user_ratings_total", bruto.get("user_ratings_total", "")
             ),
             "status": status_map.get(status_raw, status_raw),
+            "latitude": lat if lat is not None else "",
+            "longitude": lng if lng is not None else "",
             "place_id": place_id,
         }
