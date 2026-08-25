@@ -126,21 +126,34 @@ exemplos:
 # Progresso
 # ---------------------------------------------------------------------------
 
+# Falhas por termo coletadas durante a busca. Uma busca em que todos os termos
+# falharam devolve zero provedores — e sem esse registro a CLI relataria
+# "nenhum provedor encontrado", escondendo um erro de API atrás de um conselho
+# enganoso ("aumente o raio").
+_falhas_da_busca: list[str] = []
+
+
 def _imprimir_progresso(info: dict) -> None:
     """
     Exibe no terminal uma linha de progresso a partir do dict estruturado
     emitido por BuscadorProvedores.buscar_todos().
 
-    Quando novos_provedores é None, está buscando (ainda sem resultado).
-    Quando é int, a etapa foi concluída.
+    Três situações:
+      - erro preenchido        → a busca daquele termo falhou
+      - novos_provedores None  → etapa em andamento
+      - novos_provedores int   → etapa concluída
     """
     etapa = info["etapa"]
     total = info["total_etapas"]
     msg = info["mensagem"]
     novos = info["novos_provedores"]
     acumulado = info["total_acumulado"]
+    erro = info.get("erro")
 
-    if novos is None:
+    if erro:
+        _falhas_da_busca.append(erro)
+        print(f"  ⚠ {msg}", file=sys.stderr)
+    elif novos is None:
         # Etapa em andamento
         print(f"[{etapa}/{total}] {msg}")
     else:
@@ -282,6 +295,13 @@ def main() -> int:
     print(f"\n{'─' * 50}")
 
     if total == 0:
+        # Zero resultados por falha de API é um caso diferente de zero
+        # resultados por ausência de cadastro — e pede orientação diferente.
+        if _falhas_da_busca:
+            print("Nenhum provedor encontrado: todas as buscas falharam.", file=sys.stderr)
+            print(f"\nCausa: {_falhas_da_busca[0]}", file=sys.stderr)
+            return 1
+
         print("Nenhum provedor de internet encontrado para esta localização.")
         print("Sugestões:")
         print("  • Aumente o raio com -r (ex: -r 20000)")

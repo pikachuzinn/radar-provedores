@@ -6,6 +6,7 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 
 ## Funcionalidades
 
+- Usa a **Places API (New)** por padrão, com suporte à API legada para projetos antigos
 - Aceita endereço textual ou coordenadas geográficas como entrada
 - Busca provedores num raio configurável (padrão: 5 km)
 - Extrai: nome, endereço, telefone, site e avaliação de cada empresa
@@ -17,7 +18,7 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 - Interface de linha de comando completa ou modo interativo
 - **Chave de API nunca exposta em logs** — filtro de logging automático mascara a chave em qualquer saída de debug, inclusive nos logs de bibliotecas de terceiros
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
-- **Suíte de testes** com 60 casos, sem dependência de rede nem de chave de API
+- **Suíte de testes** com 99 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -95,7 +96,11 @@ GOOGLE_MAPS_API_KEY=AIzaSy...sua_chave_real...
 3. No menu lateral, vá em **APIs e Serviços → Biblioteca**
 4. Ative as seguintes APIs:
    - **Geocoding API** — converte endereços em coordenadas
-   - **Places API** — busca de estabelecimentos e detalhes
+   - **Places API (New)** — busca de estabelecimentos e detalhes
+
+   > Atenção ao nome: **"Places API (New)"** e **"Places API"** são produtos
+   > diferentes no Console. Este projeto usa a *(New)* por padrão. A antiga só
+   > aparece para projetos criados antes de 01/03/2025.
 5. Vá em **APIs e Serviços → Credenciais**
 6. Clique em **+ Criar Credenciais → Chave de API**
 7. Copie a chave gerada e cole no arquivo `.env`
@@ -105,7 +110,7 @@ GOOGLE_MAPS_API_KEY=AIzaSy...sua_chave_real...
 Para evitar uso não autorizado caso a chave vaze:
 
 - Em **Restrições de aplicativo**: selecione *Endereços IP* e adicione seu IP fixo, ou deixe sem restrição durante testes
-- Em **Restrições de API**: selecione apenas *Geocoding API* e *Places API*
+- Em **Restrições de API**: selecione apenas *Geocoding API* e *Places API (New)*
 
 ---
 
@@ -125,29 +130,72 @@ O filtro é instalado nos **handlers** do logger raiz, e não apenas no logger r
 
 ---
 
+## Qual geração da Places API usar
+
+O Google marcou a Places API legada como *legacy* em **01/03/2025**. Na prática:
+
+| Situação do seu projeto no Google Cloud | O que usar |
+|---|---|
+| Criado a partir de 01/03/2025 | **Places API (New)** — a legada não pode mais ser ativada |
+| Criado antes, já usando a legada | Qualquer uma; a legada segue funcionando |
+
+A legada está congelada (sem novos recursos) e o Google promete avisar com no
+mínimo 12 meses antes de desligá-la. O padrão deste projeto é a API nova.
+
+Para voltar à legada, altere em `config.py`:
+
+```python
+USAR_PLACES_NOVA = False
+```
+
+### Por que a API nova sai muito mais barata
+
+Na API legada, a Text Search devolvia um resumo sem telefone nem site: era
+preciso **uma chamada de Place Details para cada estabelecimento**. Na API nova,
+o cabeçalho `X-Goog-FieldMask` permite pedir telefone, site e avaliação já na
+própria busca, para até 20 lugares por requisição.
+
+Numa busca típica de 5 termos, 3 páginas e ~60 provedores encontrados:
+
+| | Requisições de busca | Chamadas de Place Details | Total |
+|---|---|---|---|
+| Places API (Legacy) | 15 | até 60 | **até 75** |
+| Places API (New) | 15 | 0 | **15** |
+
+---
+
 ## Custo estimado das APIs
 
-O Google Maps Platform oferece **US$ 200 de crédito gratuito por mês**. A tabela abaixo mostra o custo acima desse crédito:
+> **Atenção:** o antigo crédito mensal de US$ 200 **foi descontinuado** junto com
+> a mudança de março de 2025. O modelo atual é de **cota gratuita por SKU**, e cada
+> tipo de chamada tem a sua. Os valores abaixo são referência de Tier 1 (até 100 mil
+> chamadas/mês) — confirme sempre na
+> [página de preços oficial](https://developers.google.com/maps/billing-and-pricing/pricing).
 
-| API | Custo por 1.000 chamadas | Uso típico por busca |
+| SKU | Grátis por mês | Acima disso (por 1.000) |
 |---|---|---|
-| Geocoding API | US$ 5,00 | 1 chamada |
-| Places Text Search | US$ 32,00 | 5–15 chamadas |
-| Place Details | US$ 17,00 | 10–60 chamadas* |
+| Geocoding | 10.000 | US$ 5,00 |
+| Text Search Enterprise | 1.000 | US$ 35,00 |
+| Place Details Enterprise | 1.000 | US$ 20,00 |
 
-*\* O cache local elimina chamadas repetidas ao Place Details para `place_id`s já consultados. Em buscas consecutivas na mesma cidade, a economia pode ser significativa.*
+O field mask padrão deste projeto inclui telefone, site e avaliação — campos da
+faixa **Enterprise**, a mais cara. É ela que define o SKU da requisição inteira.
 
-### Estimativa por execução (sem cache)
+### Quanto rende a cota gratuita
 
-| Cenário | Chamadas aprox. | Custo estimado |
-|---|---|---|
-| Poucos resultados (~10 provedores) | ~17 | ~US$ 0,40 |
-| Resultados médios (~30 provedores) | ~47 | ~US$ 1,00 |
-| Muitos resultados (~60 provedores) | ~77 | ~US$ 1,60 |
+Cada busca completa consome **1 chamada de Geocoding + até 15 de Text Search**
+(5 termos × 3 páginas). Com 1.000 Text Search Enterprise gratuitas por mês:
 
-Com o crédito de US$ 200/mês, é possível realizar **~125 buscas completas gratuitamente** (sem cache). Com o cache ativo, esse número aumenta nas buscas seguintes da mesma região.
+| Cenário | Text Search por busca | Buscas grátis/mês | Custo unitário acima da cota |
+|---|---|---|---|
+| Padrão (5 termos, 3 páginas) | até 15 | ~66 | ~US$ 0,53 |
+| Enxuto (2 termos, 3 páginas) | até 6 | ~166 | ~US$ 0,21 |
+| Mínimo (1 termo, 1 página) | 1 | 1.000 | ~US$ 0,035 |
 
-> **Dica:** Para testar sem custos, use raios menores (`-r 2000`) ou reduza `TERMOS_DE_BUSCA` em `config.py`.
+> **Dica:** para reduzir custo, corte termos em `TERMOS_DE_BUSCA` ou baixe
+> `MAX_PAGINAS`. Remover os campos Enterprise de `CAMPOS_PLACES_NOVA`
+> (`nationalPhoneNumber`, `websiteUri`, `rating`, `userRatingCount`) derruba a
+> requisição para a faixa Pro — mas aí você perde justamente o contato das empresas.
 
 ---
 
@@ -285,6 +333,12 @@ with BuscadorProvedores(api_key="SUA_CHAVE") as buscador:
     provedores = buscador.buscar_todos(lat, lng, raio=8000)
 ```
 
+Para forçar uma geração da API sem mexer no `config.py`, passe `usar_nova`:
+
+```python
+BuscadorProvedores(api_key="SUA_CHAVE", usar_nova=False)   # Places API (Legacy)
+```
+
 > Em processos de vida longa (servidor web, GUI) isso não é opcional. Cada
 > instância registra um filtro no logging global; sem o encerramento, eles se
 > acumulam a cada requisição e toda mensagem de log passa por todos eles.
@@ -298,7 +352,8 @@ buscador_provedores/
 │
 ├── main.py            # CLI e modo interativo — delega lógica ao service.py
 ├── service.py         # Camada de serviço sem I/O (Flask, GUI, testes)
-├── buscador.py        # Geocodificação + Places API + filtro de segurança de logs
+├── buscador.py        # Orquestração: geocodificação, paginação, dedup, cache, logs
+├── clientes.py        # Clientes HTTP das duas gerações da Places API
 ├── exportador.py      # Exportação para CSV e Excel (.xlsx)
 ├── cache.py           # Cache local de Place Details em JSON
 ├── geo.py             # Distância entre coordenadas (Haversine)
@@ -310,6 +365,7 @@ buscador_provedores/
 │   ├── test_geo.py
 │   ├── test_cache.py
 │   ├── test_buscador.py
+│   ├── test_clientes.py
 │   ├── test_exportador.py
 │   ├── test_filtro_log.py
 │   └── test_service.py
@@ -358,6 +414,11 @@ Todas as configurações ajustáveis estão em `config.py`:
 
 | Constante | Descrição | Valor padrão |
 |---|---|---|
+| `USAR_PLACES_NOVA` | `True` = Places API (New); `False` = legada | `True` |
+| `CAMPOS_PLACES_NOVA` | Campos pedidos no `X-Goog-FieldMask` — definem o SKU | 9 campos |
+| `IDIOMA_RESULTADOS` | Idioma dos resultados (só API nova) | `"pt-BR"` |
+| `REGIAO_RESULTADOS` | Região dos resultados (só API nova) | `"BR"` |
+| `RESULTADOS_POR_PAGINA` | Resultados por página; máximo da API: 20 | `20` |
 | `RAIO_PADRAO` | Raio de busca em metros | `5000` |
 | `TERMOS_DE_BUSCA` | Palavras-chave usadas na busca | 5 termos pré-definidos |
 | `MAX_PAGINAS` | Máx. páginas de resultado por termo | `3` (= 60 resultados) |
@@ -379,8 +440,8 @@ rm .cache_detalhes.json
 
 ## Testes
 
-A suíte cobre geocodificação, paginação, cache, deduplicação, filtro de distância,
-mascaramento da chave de API e exportação. **Nenhum teste acessa a rede ou usa uma
+A suíte cobre as duas gerações da Places API, geocodificação, paginação, cache,
+deduplicação, filtro de distância, mascaramento da chave de API e exportação. **Nenhum teste acessa a rede ou usa uma
 chave real** — a sessão HTTP é substituída por um dublê que devolve respostas
 pré-programadas e registra cada chamada.
 
@@ -407,22 +468,28 @@ python -m pytest tests/test_buscador.py
 |---|---|
 | `test_geo.py` | Haversine: distâncias conhecidas, simetria, cruzamento do equador |
 | `test_cache.py` | Arquivo ausente, JSON corrompido, formato inesperado, acentuação |
-| `test_buscador.py` | Status da API, deduplicação, gravação em lote do cache, filtro de raio, callback de progresso |
+| `test_clientes.py` | Forma da requisição, cabeçalhos, field mask, mapeamento de erros e tradução de payload de cada geração |
+| `test_buscador.py` | Paginação, deduplicação, gravação em lote do cache, filtro de raio, callback de progresso |
 | `test_filtro_log.py` | Mascaramento da chave vinda de loggers filhos e remoção do filtro ao encerrar |
 | `test_exportador.py` | Ordem das colunas, BOM do CSV, campos ausentes, formatação do Excel |
 | `test_service.py` | Contrato de retorno, caminhos de erro, ausência de vazamento entre chamadas |
+
+Cada correção e cada garantia da migração foi validada por **teste de mutação**:
+reintroduzir o defeito no código faz a suíte falhar. Um teste que passa nos dois
+cenários não protege nada.
 
 ---
 
 ## Limitações conhecidas
 
 - **Cobertura do Google Maps**: empresas sem perfil no Google Maps não aparecem. Regiões menos urbanizadas tendem a ter menos cadastros.
-- **Máximo de 60 resultados por termo de busca**: a Places API limita a 3 páginas de 20 itens. Adicionar termos em `TERMOS_DE_BUSCA` amplia o alcance.
+- **Máximo de 60 resultados por termo de busca**: a Places API limita a 3 páginas de 20 itens, nas duas gerações. Adicionar termos em `TERMOS_DE_BUSCA` amplia o alcance.
 - **`radius` é um viés, não um filtro**: a Places Text Search usa o raio para ordenar por relevância, mas devolve estabelecimentos bem além dele. Use a coluna *Distância (km)* para filtrar na planilha, ou defina `RAIO_ESTRITO = True` em `config.py` para descartar automaticamente — o descarte ocorre antes da chamada de Place Details, então também reduz custo.
 - **Raio máximo da Places API**: 50.000 metros (50 km). Valores maiores são silenciosamente ignorados pela API.
 - **Dados desatualizados**: telefone e site dependem do que está cadastrado no Google Maps pela própria empresa.
-- **Rate limiting**: pausas automáticas entre chamadas para respeitar os limites. Buscas com muitos resultados podem levar alguns minutos.
+- **Rate limiting**: pausas automáticas entre chamadas para respeitar os limites. Na API legada há ainda uma espera obrigatória de 2 s antes de usar o token de cada página seguinte — a API nova não exige essa espera, o que torna as buscas visivelmente mais rápidas.
 - **Cache não expira automaticamente**: dados muito antigos podem divergir da realidade. Apague `.cache_detalhes.json` periodicamente ou ao notar inconsistências.
+- **Com a API nova o cache quase não é exercitado**: como os dados já vêm na busca, não há chamadas de Place Details por estabelecimento para cachear. O cache permanece ativo para consultas pontuais via `obter_detalhes()`.
 
 ---
 
@@ -431,7 +498,10 @@ python -m pytest tests/test_buscador.py
 | Mensagem de erro | Causa provável | Solução |
 |---|---|---|
 | `Chave de API não encontrada` | Arquivo `.env` ausente ou mal configurado | Crie o `.env` a partir do `.env.example` |
-| `Chave de API inválida ou sem permissão` | API não ativada no Google Cloud | Ative Geocoding API e Places API no Console |
+| `Chave de API inválida ou sem permissão` | API não ativada no Google Cloud | Ative Geocoding API e Places API (New) no Console |
+| `Places API (New) não ativada no projeto` | Ativou "Places API" (legada) em vez de "Places API (New)" | São produtos distintos no Console; ative a *(New)* |
+| `sem permissão para a Places API (Legacy)` | Projeto criado a partir de 01/03/2025 não tem acesso à API legada | Defina `USAR_PLACES_NOVA = True` em `config.py` |
+| `Cota da Places API esgotada` | Passou da cota gratuita mensal do SKU | Reduza `TERMOS_DE_BUSCA` ou `MAX_PAGINAS`, ou aguarde a virada do mês |
 | `Endereço não encontrado` | Endereço muito vago ou incorreto | Adicione cidade, estado ou CEP |
 | `Sem conexão com a internet` | Falha de rede | Verifique sua conexão |
 | `Para exportar em Excel instale: pip install pandas openpyxl` | Dependências opcionais ausentes | Execute `pip install pandas openpyxl` |

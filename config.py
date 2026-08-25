@@ -23,15 +23,65 @@ TERMOS_DE_BUSCA: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# API do Google Places
+# Geração da Places API
 # ---------------------------------------------------------------------------
 
-# Endpoints oficiais
+# O Google congelou a Places API legada em 01/03/2025: projetos do Google Cloud
+# criados a partir dessa data NÃO conseguem mais ativá-la, embora projetos
+# anteriores continuem funcionando (com aviso mínimo de 12 meses antes de um
+# eventual desligamento).
+#
+#   True  — Places API (New). Padrão, e única opção para projetos novos.
+#           Traz telefone, site e avaliação já na busca: dispensa a chamada de
+#           Place Details por estabelecimento e reduz muito o custo.
+#   False — Places API (Legacy). Só para projetos que já a utilizam hoje.
+USAR_PLACES_NOVA: bool = True
+
+# Idioma e região dos resultados (usados apenas pela API nova).
+IDIOMA_RESULTADOS: str = "pt-BR"
+REGIAO_RESULTADOS: str = "BR"
+
+# Resultados por página. Máximo aceito pela API: 20.
+RESULTADOS_POR_PAGINA: int = 20
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+# Geocoding API — comum às duas gerações, não faz parte da migração.
 URL_GEOCODING = "https://maps.googleapis.com/maps/api/geocode/json"
+
+# Places API (New)
+URL_PLACES_BUSCA = "https://places.googleapis.com/v1/places:searchText"
+URL_PLACES_DETALHES = "https://places.googleapis.com/v1/places"  # + "/{place_id}"
+
+# Places API (Legacy)
 URL_TEXT_SEARCH = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 URL_DETALHES = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# Campos solicitados na chamada de Place Details.
+# ---------------------------------------------------------------------------
+# Campos solicitados
+# ---------------------------------------------------------------------------
+
+# Campos da Places API (New), usados no cabeçalho X-Goog-FieldMask.
+# O field mask é obrigatório: sem ele a API retorna erro, e não uma resposta
+# com todos os campos. Cada campo tem faixa de preço própria — 'id',
+# 'formattedAddress' e 'location' são Essentials; 'displayName' e
+# 'businessStatus' são Pro; telefone, site e avaliação são Enterprise.
+# Remover os campos Enterprise reduz o custo por requisição.
+CAMPOS_PLACES_NOVA: list[str] = [
+    "id",
+    "displayName",
+    "formattedAddress",
+    "nationalPhoneNumber",
+    "websiteUri",
+    "rating",
+    "userRatingCount",
+    "businessStatus",
+    "location",
+]
+
+# Campos solicitados na chamada de Place Details da API legada.
 # Cada campo tem um custo separado; remova os que não precisar para economizar.
 CAMPOS_DETALHES: list[str] = [
     "name",
@@ -52,7 +102,8 @@ MAX_PAGINAS: int = 3
 INTERVALO_ENTRE_CHAMADAS: float = 0.2
 
 # Intervalo adicional (segundos) ao buscar a próxima página paginada.
-# A API exige um pequeno atraso antes de usar o next_page_token.
+# Exigência da API legada: o next_page_token só passa a valer alguns segundos
+# depois de emitido. A API nova aceita o pageToken de imediato e ignora este valor.
 INTERVALO_PAGINACAO: float = 2.0
 
 # ---------------------------------------------------------------------------

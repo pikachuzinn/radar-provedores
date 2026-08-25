@@ -92,7 +92,8 @@ def executar_busca(
         diretorio: Pasta onde salvar os arquivos exportados.
         callback_progresso: Função chamada a cada atualização de progresso.
             Recebe um dict com as chaves: etapa, total_etapas, mensagem,
-            novos_provedores, total_acumulado. Ver BuscadorProvedores.buscar_todos.
+            novos_provedores, total_acumulado e erro.
+            Ver BuscadorProvedores.buscar_todos.
 
     Returns:
         Dict com:

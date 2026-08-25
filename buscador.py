@@ -1,15 +1,20 @@
 """
-buscador.py — Módulo principal de busca de provedores de internet.
+buscador.py — Orquestração da busca de provedores de internet.
 
-Encapsula todas as chamadas à Google Places API:
+Responsabilidades:
   1. Geocodificação de endereços → coordenadas (lat, lng)
-  2. Text Search para encontrar provedores próximos
-  3. Place Details para enriquecer cada resultado com telefone, site, etc.
+  2. Coordenação das buscas por termo e por página
+  3. Deduplicação, cálculo de distância e filtro de raio
+  4. Cache de Place Details e segurança da chave nas mensagens de log
+
+O diálogo com a Places API fica em clientes.py, que abriga uma implementação
+para cada geração da API (nova e legada). Este módulo não sabe com qual delas
+está falando: recebe registros já normalizados e trata todos igual.
 
 Segurança: a chave de API nunca é incluída em mensagens de log. Um filtro
-de logging (_FiltroChaveAPI) é instalado nos handlers do logger raiz ao
-instanciar BuscadorProvedores, mascarando a chave em qualquer log acidental —
-inclusive nos emitidos por bibliotecas de terceiros, como requests/urllib3.
+(_FiltroChaveAPI) é instalado nos handlers do logger raiz ao instanciar
+BuscadorProvedores, mascarando a chave em qualquer log acidental — inclusive
+nos emitidos por bibliotecas de terceiros, como requests/urllib3.
 
 Ciclo de vida: use o buscador como context manager sempre que possível.
 
@@ -29,22 +34,24 @@ from typing import Callable, Optional
 import requests
 
 from cache import carregar_cache, salvar_cache
+from clientes import ErroAPI, criar_cliente, mesclar
 from config import (
     CAMINHO_CACHE,
-    CAMPOS_DETALHES,
     INTERVALO_ENTRE_CHAMADAS,
     INTERVALO_GRAVACAO_CACHE,
-    INTERVALO_PAGINACAO,
     MAX_PAGINAS,
     RAIO_ESTRITO,
     TERMOS_DE_BUSCA,
-    URL_DETALHES,
     URL_GEOCODING,
-    URL_TEXT_SEARCH,
+    USAR_PLACES_NOVA,
 )
 from geo import distancia_km
 
 logger = logging.getLogger(__name__)
+
+# ErroAPI é definido em clientes.py, mas continua exportado aqui: é a partir
+# deste módulo que service.py e os testes o importam.
+__all__ = ["BuscadorProvedores", "ErroAPI", "ErroLocalizacao"]
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +60,6 @@ logger = logging.getLogger(__name__)
 
 class ErroLocalizacao(Exception):
     """Levantado quando o endereço não pode ser geocodificado."""
-
-
-class ErroAPI(Exception):
-    """Levantado para erros inesperados retornados pela API do Google."""
 
 
 # ---------------------------------------------------------------------------
@@ -141,16 +144,23 @@ class BuscadorProvedores:
     Realiza buscas de provedores de internet via Google Places API.
 
     Uso básico:
-        buscador = BuscadorProvedores(api_key="SUA_CHAVE")
-        lat, lng = buscador.geocodificar("Florianópolis, SC")
-        provedores = buscador.buscar_todos(lat, lng, raio=8000)
+        with BuscadorProvedores(api_key="SUA_CHAVE") as buscador:
+            lat, lng = buscador.geocodificar("Florianópolis, SC")
+            provedores = buscador.buscar_todos(lat, lng, raio=8000)
     """
 
-    def __init__(self, api_key: str, caminho_cache: str = CAMINHO_CACHE) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        caminho_cache: str = CAMINHO_CACHE,
+        usar_nova: Optional[bool] = None,
+    ) -> None:
         """
         Args:
             api_key: Chave da Google Maps API.
             caminho_cache: Caminho do arquivo de cache de Place Details.
+            usar_nova: True para Places API (New), False para a legada.
+                Quando None, usa config.USAR_PLACES_NOVA.
         """
         if not api_key:
             raise ValueError("A chave de API do Google Maps não pode ser vazia.")
@@ -158,6 +168,14 @@ class BuscadorProvedores:
         self.api_key = api_key
         self._sessao = requests.Session()
         self._sessao.headers.update({"Accept": "application/json"})
+
+        # O cliente encapsula as diferenças entre as duas gerações da Places API
+        self._cliente = criar_cliente(
+            api_key=api_key,
+            sessao=self._sessao,
+            usar_nova=USAR_PLACES_NOVA if usar_nova is None else usar_nova,
+        )
+        logger.debug("Usando a Places API: %s", self._cliente.nome)
 
         # Carrega o cache de Place Details do disco
         self._caminho_cache = caminho_cache
@@ -223,6 +241,9 @@ class BuscadorProvedores:
         """
         Converte um endereço textual em coordenadas geográficas (lat, lng).
 
+        Usa a Geocoding API, que é comum às duas gerações da Places API e não
+        foi afetada pela migração.
+
         Args:
             endereco: Endereço completo ou parcial em texto livre.
 
@@ -275,99 +296,6 @@ class BuscadorProvedores:
         return lat, lng
 
     # ------------------------------------------------------------------
-    # Busca de lugares
-    # ------------------------------------------------------------------
-
-    def _buscar_pagina(
-        self,
-        query: str,
-        lat: float,
-        lng: float,
-        raio: int,
-        next_page_token: Optional[str] = None,
-    ) -> dict:
-        """
-        Executa uma única chamada à Places Text Search API.
-
-        Quando `next_page_token` é fornecido, ignora os demais parâmetros
-        pois a API usa o token para continuar a busca anterior.
-        """
-        if next_page_token:
-            params = {"pagetoken": next_page_token, "key": self.api_key}
-        else:
-            params = {
-                "query": query,
-                "location": f"{lat},{lng}",
-                "radius": raio,
-                "key": self.api_key,
-            }
-
-        try:
-            resposta = self._sessao.get(URL_TEXT_SEARCH, params=params, timeout=10)
-            resposta.raise_for_status()
-        except requests.ConnectionError as exc:
-            raise ConnectionError("Falha de rede ao buscar provedores.") from exc
-        except requests.Timeout as exc:
-            raise ConnectionError("Tempo esgotado ao buscar provedores.") from exc
-        except requests.HTTPError as exc:
-            raise ErroAPI(
-                f"Erro HTTP {resposta.status_code} na Places Text Search."
-            ) from exc
-
-        return resposta.json()
-
-    def _buscar_por_termo(
-        self, termo: str, lat: float, lng: float, raio: int
-    ) -> list[dict]:
-        """
-        Busca provedores para um único termo, iterando por todas as páginas.
-
-        Returns:
-            Lista de dicts brutos retornados pela API (campo 'results').
-        """
-        resultados: list[dict] = []
-        next_token: Optional[str] = None
-
-        for pagina in range(1, MAX_PAGINAS + 1):
-            # A API exige um atraso antes de usar o next_page_token
-            if next_token:
-                logger.debug(
-                    "Aguardando %.1fs para próxima página...", INTERVALO_PAGINACAO
-                )
-                time.sleep(INTERVALO_PAGINACAO)
-
-            dados = self._buscar_pagina(termo, lat, lng, raio, next_token)
-            status = dados.get("status")
-
-            if status == "ZERO_RESULTS":
-                logger.debug(
-                    "Nenhum resultado para '%s' (página %d).", termo, pagina
-                )
-                break
-            if status == "REQUEST_DENIED":
-                raise ErroAPI(
-                    "Chave de API inválida ou sem permissão para a Places API."
-                )
-            if status not in ("OK", "ZERO_RESULTS"):
-                logger.warning(
-                    "Status inesperado '%s' para o termo '%s' (página %d).",
-                    status, termo, pagina,
-                )
-                break
-
-            itens = dados.get("results", [])
-            resultados.extend(itens)
-            logger.debug(
-                "Página %d: %d resultado(s) para '%s'.", pagina, len(itens), termo
-            )
-
-            next_token = dados.get("next_page_token")
-            if not next_token:
-                break
-
-        return resultados
-
-    # ------------------------------------------------------------------
     # Detalhes de um lugar (com cache)
     # ------------------------------------------------------------------
 
@@ -377,15 +305,23 @@ class BuscadorProvedores:
 
         Consulta o cache local antes de chamar a API. Se o place_id já
         estiver em cache, retorna o valor salvo sem nenhuma chamada de rede.
-        Caso contrário, chama a API e persiste o resultado no cache.
+
+        Com a Places API (New) esta chamada não é usada durante a busca — o
+        field mask já traz telefone, site e avaliação nos próprios resultados.
+        O método permanece público para consultas pontuais e para atualizar um
+        registro específico.
 
         Returns:
-            Dict com os campos definidos em CAMPOS_DETALHES, ou {} em caso de erro.
+            Registro normalizado parcial, ou {} em caso de erro.
         """
+        # A chave do cache inclui a geração da API: os registros das duas têm
+        # origens diferentes e um cache antigo não deve ser lido como novo.
+        chave_cache = f"{self._cliente.nome}:{place_id}"
+
         # --- Consulta o cache ---
-        if place_id in self._cache:
+        if chave_cache in self._cache:
             logger.debug("Cache hit para place_id '%s'.", place_id)
-            return self._cache[place_id]
+            return self._cache[chave_cache]
 
         # --- Chama a API ---
         # A pausa de rate limit vive aqui, e não no laço de buscar_todos, para
@@ -393,40 +329,19 @@ class BuscadorProvedores:
         # nunca toca a rede anula justamente o ganho que o cache existe para dar.
         time.sleep(INTERVALO_ENTRE_CHAMADAS)
 
-        params = {
-            "place_id": place_id,
-            "fields": ",".join(CAMPOS_DETALHES),
-            "key": self.api_key,
-        }
-
         try:
-            resposta = self._sessao.get(URL_DETALHES, params=params, timeout=10)
-            resposta.raise_for_status()
-        except (requests.ConnectionError, requests.Timeout):
-            logger.warning(
-                "Falha de rede ao obter detalhes do place_id '%s'. Pulando.", place_id
-            )
-            return {}
-        except requests.HTTPError:
-            logger.warning(
-                "Erro HTTP ao obter detalhes do place_id '%s'. Pulando.", place_id
-            )
+            resultado = self._cliente.obter_detalhes(place_id)
+        except (ConnectionError, ErroAPI) as exc:
+            logger.warning("Falha ao obter detalhes de '%s': %s", place_id, exc)
             return {}
 
-        dados = resposta.json()
-        if dados.get("status") != "OK":
-            logger.warning(
-                "Place Details retornou status '%s' para '%s'.",
-                dados.get("status"), place_id,
-            )
+        if not resultado:
             return {}
-
-        resultado = dados.get("result", {})
 
         # --- Salva no cache ---
         # A gravação em disco é feita em lote (ver gravar_cache) para não
         # reescrever o arquivo inteiro a cada place_id consultado.
-        self._cache[place_id] = resultado
+        self._cache[chave_cache] = resultado
         self._entradas_nao_gravadas += 1
         if self._entradas_nao_gravadas >= INTERVALO_GRAVACAO_CACHE:
             self.gravar_cache()
@@ -462,6 +377,8 @@ class BuscadorProvedores:
                     "novos_provedores" (int | None) — novos encontrados neste
                         termo; None durante a busca, int após a conclusão
                     "total_acumulado"  (int)  — total geral até o momento
+                    "erro"             (str | None) — mensagem da falha, quando
+                        a busca daquele termo não pôde ser concluída
 
         Returns:
             Lista de dicts com os campos padronizados definidos em COLUNAS_SAIDA,
@@ -481,10 +398,11 @@ class BuscadorProvedores:
                 "mensagem": f'Buscando por: "{termo}"...',
                 "novos_provedores": None,
                 "total_acumulado": len(provedores),
+                "erro": None,
             })
 
             try:
-                brutos = self._buscar_por_termo(termo, lat, lng, raio)
+                registros = self._buscar_por_termo(termo, lat, lng, raio)
             except (ConnectionError, ErroAPI) as exc:
                 notificar({
                     "etapa": i,
@@ -492,32 +410,41 @@ class BuscadorProvedores:
                     "mensagem": f'Aviso ao buscar "{termo}": {exc}',
                     "novos_provedores": 0,
                     "total_acumulado": len(provedores),
+                    # A interface precisa distinguir "nada encontrado" de
+                    # "a busca falhou" — sem isso, um erro de API vira um
+                    # silencioso "nenhum resultado" e o conselho ao usuário
+                    # ("aumente o raio") passa a ser enganoso.
+                    "erro": str(exc),
                 })
                 continue
 
             novos = 0
-            for item in brutos:
-                place_id = item.get("place_id")
+            for registro in registros:
+                place_id = registro.get("place_id")
                 if not place_id or place_id in ids_vistos:
                     continue
 
                 ids_vistos.add(place_id)
 
-                # O parâmetro `radius` da Text Search é um viés de relevância,
-                # não um filtro rígido — a API devolve resultados além do raio.
-                # Descartamos aqui, ANTES de gastar uma chamada de Place Details.
-                distancia = self._distancia_do_centro(item, lat, lng)
+                # O raio da Places API é um viés de relevância, não um filtro —
+                # a API devolve resultados bem além dele. Descartamos aqui, ANTES
+                # de gastar uma eventual chamada de Place Details.
+                distancia = self._distancia_do_centro(registro, lat, lng)
                 if RAIO_ESTRITO and distancia is not None and distancia > raio_km:
                     logger.debug(
                         "Descartado '%s': %.2f km do centro (raio de %.2f km).",
-                        item.get("name", place_id), distancia, raio_km,
+                        registro.get("nome", place_id), distancia, raio_km,
                     )
                     continue
 
-                detalhes = self.obter_detalhes(place_id)
-                provedores.append(
-                    self._normalizar(item, detalhes, place_id, distancia)
-                )
+                registro["distancia_km"] = distancia if distancia is not None else ""
+
+                # Só a API legada precisa de uma chamada extra por estabelecimento:
+                # a busca dela não devolve telefone nem site.
+                if self._cliente.requer_detalhes:
+                    registro = mesclar(registro, self.obter_detalhes(place_id))
+
+                provedores.append(registro)
                 novos += 1
 
             # Notifica o resultado da etapa com o número de novos encontrados
@@ -527,6 +454,7 @@ class BuscadorProvedores:
                 "mensagem": f'Busca por "{termo}" concluída.',
                 "novos_provedores": novos,
                 "total_acumulado": len(provedores),
+                "erro": None,
             })
 
         # Garante que nenhuma entrada de cache obtida nesta busca se perca,
@@ -539,81 +467,50 @@ class BuscadorProvedores:
     # Helpers internos
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _coordenadas(bruto: dict) -> tuple[float | None, float | None]:
+    def _buscar_por_termo(
+        self, termo: str, lat: float, lng: float, raio: int
+    ) -> list[dict]:
         """
-        Extrai (latitude, longitude) do bloco geometry.location do resultado bruto.
-
-        As coordenadas já vêm na resposta da Text Search — não custam nenhuma
-        chamada extra à API.
+        Busca um termo percorrendo todas as páginas disponíveis.
 
         Returns:
-            Tupla (lat, lng), ou (None, None) se o resultado não trouxer geometria.
+            Lista de registros normalizados, ainda sem distância nem deduplicação.
         """
-        local = bruto.get("geometry", {}).get("location", {})
-        return local.get("lat"), local.get("lng")
+        registros: list[dict] = []
+        token: Optional[str] = None
 
-    @classmethod
+        for pagina in range(1, MAX_PAGINAS + 1):
+            # A API legada exige um atraso antes de usar o token da próxima
+            # página; a nova aceita de imediato e declara intervalo zero.
+            if token and self._cliente.intervalo_paginacao:
+                logger.debug(
+                    "Aguardando %.1fs para próxima página...",
+                    self._cliente.intervalo_paginacao,
+                )
+                time.sleep(self._cliente.intervalo_paginacao)
+
+            da_pagina, token = self._cliente.buscar_pagina(termo, lat, lng, raio, token)
+            registros.extend(da_pagina)
+            logger.debug(
+                "Página %d: %d resultado(s) para '%s'.", pagina, len(da_pagina), termo
+            )
+
+            if not token:
+                break
+
+        return registros
+
+    @staticmethod
     def _distancia_do_centro(
-        cls, bruto: dict, lat_centro: float, lng_centro: float
+        registro: dict, lat_centro: float, lng_centro: float
     ) -> float | None:
         """
         Distância em km entre o centro da busca e o estabelecimento.
 
         Returns:
-            Distância em km, ou None se o resultado não trouxer coordenadas.
+            Distância em km, ou None se o registro não trouxer coordenadas.
         """
-        lat, lng = cls._coordenadas(bruto)
-        if lat is None or lng is None:
+        lat, lng = registro.get("latitude"), registro.get("longitude")
+        if lat in ("", None) or lng in ("", None):
             return None
         return distancia_km(lat_centro, lng_centro, lat, lng)
-
-    @classmethod
-    def _normalizar(
-        cls,
-        bruto: dict,
-        detalhes: dict,
-        place_id: str,
-        distancia: float | None = None,
-    ) -> dict:
-        """
-        Combina dados brutos da Text Search com os detalhes do Place Details
-        em um dict com chaves padronizadas.
-
-        Args:
-            bruto: Item retornado pela Text Search.
-            detalhes: Resposta do Place Details (pode ser {} se a chamada falhou).
-            place_id: Identificador do estabelecimento no Google.
-            distancia: Distância em km até o centro da busca, se já calculada.
-        """
-        # Preferimos os dados de Place Details por serem mais completos;
-        # usamos os dados brutos como fallback.
-        status_raw = detalhes.get("business_status", bruto.get("business_status", ""))
-        status_map = {
-            "OPERATIONAL": "Operacional",
-            "CLOSED_TEMPORARILY": "Fechado temporariamente",
-            "CLOSED_PERMANENTLY": "Fechado permanentemente",
-        }
-
-        lat, lng = cls._coordenadas(bruto)
-
-        return {
-            "nome": detalhes.get("name") or bruto.get("name", ""),
-            "endereco": (
-                detalhes.get("formatted_address")
-                or bruto.get("formatted_address", "")
-            ),
-            "telefone": detalhes.get("formatted_phone_number", ""),
-            "site": detalhes.get("website", ""),
-            # Campo vazio (e não 0) quando não há coordenadas: numa planilha,
-            # um zero seria lido como "no mesmo endereço do centro da busca".
-            "distancia_km": distancia if distancia is not None else "",
-            "avaliacao": detalhes.get("rating", bruto.get("rating", "")),
-            "total_avaliacoes": detalhes.get(
-                "user_ratings_total", bruto.get("user_ratings_total", "")
-            ),
-            "status": status_map.get(status_raw, status_raw),
-            "latitude": lat if lat is not None else "",
-            "longitude": lng if lng is not None else "",
-            "place_id": place_id,
-        }
