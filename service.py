@@ -92,43 +92,50 @@ def executar_busca(
         diretorio: Pasta onde salvar os arquivos exportados.
         callback_progresso: Função chamada a cada atualização de progresso.
             Recebe um dict com as chaves: etapa, total_etapas, mensagem,
-            novos_provedores, total_acumulado. Ver BuscadorProvedores.buscar_todos.
+            novos_provedores, total_acumulado e erro.
+            Ver BuscadorProvedores.buscar_todos.
 
     Returns:
         Dict com:
             "provedores"  : list[dict] — dados de cada provedor encontrado
+                            (inclui latitude, longitude e distancia_km)
             "arquivos"    : list[str]  — caminhos absolutos dos arquivos gerados
             "total"       : int        — quantidade de provedores encontrados
             "coordenadas" : tuple[float, float] | None — lat/lng usadas na busca
             "erro"        : str | None — mensagem de erro, ou None se bem-sucedido
     """
+    # Toda condição de erro sai como dict com a chave "erro" preenchida —
+    # esta camada nunca levanta exceção para quem a chama.
+    if not api_key:
+        return _erro("Chave de API não fornecida.")
+
     if not endereco and not coordenadas:
         return _erro("Nenhuma localização fornecida (informe 'endereco' ou 'coordenadas').")
 
-    buscador = BuscadorProvedores(api_key=api_key)
+    # O context manager garante a gravação do cache, o fechamento da sessão HTTP
+    # e a remoção do filtro de log ao final. Sem ele, um servidor que chama esta
+    # função a cada requisição acumula filtros no logging global indefinidamente.
+    with BuscadorProvedores(api_key=api_key) as buscador:
+        # --- Geocodificação ---
+        if endereco:
+            try:
+                lat, lng = buscador.geocodificar(endereco)
+                logger.info("Geocodificação concluída: (%.6f, %.6f)", lat, lng)
+            except (ErroLocalizacao, ErroAPI, ConnectionError) as exc:
+                return _erro(str(exc))
+        else:
+            lat, lng = coordenadas  # type: ignore[misc]
 
-    # --- Geocodificação ---
-    if endereco:
+        # --- Busca ---
         try:
-            lat, lng = buscador.geocodificar(endereco)
-            logger.info("Geocodificação concluída: (%.6f, %.6f)", lat, lng)
-        except ErroLocalizacao as exc:
+            provedores = buscador.buscar_todos(
+                lat=lat,
+                lng=lng,
+                raio=raio,
+                callback_progresso=callback_progresso,
+            )
+        except (ConnectionError, ErroAPI) as exc:
             return _erro(str(exc))
-        except (ErroAPI, ConnectionError) as exc:
-            return _erro(str(exc))
-    else:
-        lat, lng = coordenadas  # type: ignore[misc]
-
-    # --- Busca ---
-    try:
-        provedores = buscador.buscar_todos(
-            lat=lat,
-            lng=lng,
-            raio=raio,
-            callback_progresso=callback_progresso,
-        )
-    except (ConnectionError, ErroAPI) as exc:
-        return _erro(str(exc))
 
     if not provedores:
         return {
@@ -168,8 +175,15 @@ def executar_busca(
 
 
 def _erro(mensagem: str) -> dict:
-    """Monta um dict de resultado padronizado para situações de erro."""
-    logger.error("executar_busca encerrado com erro: %s", mensagem)
+    """
+    Monta um dict de resultado padronizado para situações de erro.
+
+    O registro é feito em DEBUG, e não em ERROR, de propósito: a mensagem já
+    volta na chave "erro" para quem chamou, e é dessa camada a responsabilidade
+    de exibi-la. Registrar em ERROR fazia o mesmo texto aparecer duas vezes no
+    terminal — uma como log e outra como mensagem formatada da CLI.
+    """
+    logger.debug("executar_busca encerrado com erro: %s", mensagem)
     return {
         "provedores": [],
         "arquivos": [],

@@ -8,7 +8,6 @@ para o modo CSV — o script funciona sem ele caso apenas CSV seja usado.
 
 import csv
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
