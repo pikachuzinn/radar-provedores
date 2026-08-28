@@ -62,6 +62,7 @@ Exemplo de uso em GUI (tkinter):
 import logging
 from typing import Callable, Optional
 
+from analise_termos import analisar
 from buscador import BuscadorProvedores, ErroAPI, ErroLocalizacao
 from config import DIRETORIO_SAIDA, RAIO_PADRAO
 from exportador import exportar_resultados
@@ -103,6 +104,10 @@ def executar_busca(
             "total"       : int        — quantidade de provedores encontrados
             "coordenadas" : tuple[float, float] | None — lat/lng usadas na busca
             "erro"        : str | None — mensagem de erro, ou None se bem-sucedido
+            "analise_termos" : dict — sobreposição entre os termos de busca,
+                            calculada a partir dos dados que a própria busca já
+                            produziu, sem nenhuma requisição extra à API.
+                            Ver analise_termos.analisar().
     """
     # Toda condição de erro sai como dict com a chave "erro" preenchida —
     # esta camada nunca levanta exceção para quem a chama.
@@ -137,6 +142,10 @@ def executar_busca(
         except (ConnectionError, ErroAPI) as exc:
             return _erro(str(exc))
 
+        # Colhido ainda dentro do bloco: são atributos da instância, que sai
+        # de escopo ao fim do with.
+        analise = analisar(buscador.ids_por_termo, buscador.requisicoes_por_termo)
+
     if not provedores:
         return {
             "provedores": [],
@@ -144,6 +153,7 @@ def executar_busca(
             "total": 0,
             "coordenadas": (lat, lng),
             "erro": None,
+            "analise_termos": analise,
         }
 
     # --- Exportação ---
@@ -163,6 +173,7 @@ def executar_busca(
             "total": len(provedores),
             "coordenadas": (lat, lng),
             "erro": f"Busca concluída, mas falha ao exportar: {exc}",
+            "analise_termos": analise,
         }
 
     return {
@@ -171,6 +182,7 @@ def executar_busca(
         "total": len(provedores),
         "coordenadas": (lat, lng),
         "erro": None,
+        "analise_termos": analise,
     }
 
 
@@ -190,4 +202,5 @@ def _erro(mensagem: str) -> dict:
         "total": 0,
         "coordenadas": None,
         "erro": mensagem,
+        "analise_termos": {},
     }

@@ -18,7 +18,8 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 - Interface de linha de comando completa ou modo interativo
 - **Chave de API nunca exposta em logs** — filtro de logging automático mascara a chave em qualquer saída de debug, inclusive nos logs de bibliotecas de terceiros
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
-- **Suíte de testes** com 99 casos, sem dependência de rede nem de chave de API
+- **Relatório de sobreposição dos termos** (`--relatorio-termos`) — mostra quais termos de busca são redundantes, sem custar nenhuma requisição extra
+- **Suíte de testes** com 120 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -272,6 +273,9 @@ print(resultado["erro"])       # None se tudo correu bem
 # Cada provedor traz também coordenadas e distância até o centro da busca
 print(resultado["provedores"][0]["distancia_km"])   # ex: 2.41
 print(resultado["provedores"][0]["latitude"])       # ex: -26.3044
+
+# Sobreposição entre os termos, calculada sem requisição extra
+print(resultado["analise_termos"]["dispensaveis"])  # termos que podem sair
 ```
 
 `executar_busca()` **nunca levanta exceção**: qualquer problema — chave ausente,
@@ -345,6 +349,67 @@ BuscadorProvedores(api_key="SUA_CHAVE", usar_nova=False)   # Places API (Legacy)
 
 ---
 
+## Otimizando os termos de busca
+
+Cada termo em `TERMOS_DE_BUSCA` custa até 3 requisições por busca, mas vários
+deles encontram as mesmas empresas. O relatório mede exatamente isso:
+
+```bash
+python main.py -e "Itajaí, SC" -r 10000 --relatorio-termos
+```
+
+O relatório **não custa nenhuma requisição adicional** — usa os dados que a
+busca já produziu.
+
+### Como ler o resultado
+
+```
+TERMO                               ACHOU  SÓ ELE  REPET.  REQS
+provedor de internet                   11       2    82%     1
+provedor internet fibra óptica          6       0   100%     1  ← dispensável
+internet banda larga                    6       0   100%     1
+```
+
+| Coluna | Significado |
+|---|---|
+| ACHOU | Estabelecimentos que o termo trouxe |
+| SÓ ELE | Os que nenhum outro termo encontrou |
+| REPET. | Fração dos resultados que outro termo também traria |
+| REQS | Requisições que o termo consumiu |
+
+### Cuidado: "SÓ ELE = 0" não significa "pode remover"
+
+No exemplo acima, `internet banda larga` não tem nenhum resultado exclusivo —
+mas **não** está marcado como dispensável. O motivo é uma armadilha clássica:
+vários termos podem ser redundantes *isoladamente* e ainda assim necessários
+*em conjunto*, quando uma empresa aparece apenas na combinação deles.
+
+Remover um por vez é seguro; remover todos os de "SÓ ELE = 0" de uma vez pode
+custar resultados. Por isso a recomendação do relatório é calculada por
+**cobertura**, e não pela coluna "SÓ ELE":
+
+```
+RECOMENDAÇÃO: 2 dos 5 termos bastam para os mesmos resultados nesta região.
+  Manter:  ✓ provedor de internet   ✓ internet banda larga
+  Remover: ✗ provedor internet fibra óptica  ✗ empresa telecomunicações internet
+           ✗ ISP internet service provider
+  Economia: 3 de 5 requisições (60%) sem perder nenhum resultado.
+```
+
+O conjunto sob "Manter" reproduz, por construção, todos os estabelecimentos
+que os cinco termos juntos encontraram.
+
+### Antes de cortar
+
+A sobreposição **varia por região**: um termo inútil numa capital pode ser o
+único a achar algo no interior. Rode o relatório em três ou quatro cidades
+representativas da sua área de atuação e só corte o que for dispensável em
+todas elas.
+
+---
+
+---
+
 ## Estrutura do projeto
 
 ```
@@ -357,6 +422,7 @@ buscador_provedores/
 ├── exportador.py      # Exportação para CSV e Excel (.xlsx)
 ├── cache.py           # Cache local de Place Details em JSON
 ├── geo.py             # Distância entre coordenadas (Haversine)
+├── analise_termos.py  # Sobreposição entre os termos de busca (só cálculo)
 ├── config.py          # Todas as configurações centralizadas
 │
 ├── conftest.py        # Fixtures da suíte de testes (dublês de requests)
@@ -364,6 +430,7 @@ buscador_provedores/
 ├── tests/             # Suíte de testes — não usa rede nem chave de API
 │   ├── test_geo.py
 │   ├── test_cache.py
+│   ├── test_analise_termos.py
 │   ├── test_buscador.py
 │   ├── test_clientes.py
 │   ├── test_exportador.py
@@ -400,6 +467,9 @@ Exportação:
 
 API:
   --api-key CHAVE                  Chave da API — prefira o .env por segurança
+
+Diagnóstico:
+  --relatorio-termos               Analisa a sobreposição entre os termos de busca
 
 Debug:
   -v, --verbose                    Exibe logs detalhados (chave mascarada)
@@ -469,6 +539,7 @@ python -m pytest tests/test_buscador.py
 | `test_geo.py` | Haversine: distâncias conhecidas, simetria, cruzamento do equador |
 | `test_cache.py` | Arquivo ausente, JSON corrompido, formato inesperado, acentuação |
 | `test_clientes.py` | Forma da requisição, cabeçalhos, field mask, mapeamento de erros e tradução de payload de cada geração |
+| `test_analise_termos.py` | Contribuição exclusiva, cobertura gulosa e a armadilha dos termos coletivamente necessários |
 | `test_buscador.py` | Paginação, deduplicação, gravação em lote do cache, filtro de raio, callback de progresso |
 | `test_filtro_log.py` | Mascaramento da chave vinda de loggers filhos e remoção do filtro ao encerrar |
 | `test_exportador.py` | Ordem das colunas, BOM do CSV, campos ausentes, formatação do Excel |

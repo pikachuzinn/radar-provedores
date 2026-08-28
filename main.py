@@ -20,6 +20,7 @@ import sys
 
 from dotenv import load_dotenv
 
+from analise_termos import formatar_relatorio
 from config import RAIO_PADRAO, DIRETORIO_SAIDA
 from service import executar_busca
 
@@ -109,6 +110,16 @@ exemplos:
         help=(
             "Chave da Google Maps API. Se omitida, usa GOOGLE_MAPS_API_KEY do .env. "
             "ATENÇÃO: passar a chave aqui a expõe no histórico do shell."
+        ),
+    )
+
+    # ---- Diagnóstico ----
+    parser.add_argument(
+        "--relatorio-termos",
+        action="store_true",
+        help=(
+            "Ao final, mostra quanto cada termo de TERMOS_DE_BUSCA contribuiu e "
+            "quais são redundantes. Não custa nenhuma requisição adicional."
         ),
     )
 
@@ -297,6 +308,7 @@ def main() -> int:
     if total == 0:
         # Zero resultados por falha de API é um caso diferente de zero
         # resultados por ausência de cadastro — e pede orientação diferente.
+        # (O relatório de termos não se aplica: não há sobreposição a medir.)
         if _falhas_da_busca:
             print("Nenhum provedor encontrado: todas as buscas falharam.", file=sys.stderr)
             print(f"\nCausa: {_falhas_da_busca[0]}", file=sys.stderr)
@@ -315,6 +327,12 @@ def main() -> int:
         print("\nArquivo(s) gerado(s):")
         for arq in resultado["arquivos"]:
             print(f"  → {arq}")
+
+    # ---- Relatório de sobreposição dos termos ----
+    if args.relatorio_termos and resultado["analise_termos"]:
+        analise = resultado["analise_termos"]
+        total_reqs = sum(l["requisicoes"] for l in analise["termos"])
+        print(formatar_relatorio(analise, requisicoes_totais=total_reqs))
 
     return 0
 

@@ -24,7 +24,8 @@ from conftest import (
 )
 from config import URL_GEOCODING, URL_PLACES_BUSCA
 
-CHAVES_DO_RETORNO = {"provedores", "arquivos", "total", "coordenadas", "erro"}
+CHAVES_DO_RETORNO = {"provedores", "arquivos", "total", "coordenadas", "erro",
+                     "analise_termos"}
 
 
 @pytest.fixture
@@ -201,3 +202,29 @@ def test_busca_sem_resultados_nao_e_erro(servico_falso, payload_geocoding):
     assert resultado["total"] == 0
     assert resultado["arquivos"] == []
     assert sessoes[0].fechada
+
+
+def test_retorno_traz_a_analise_de_termos(api_falsa, tmp_path):
+    """A sobreposição sai de graça da própria busca — sem requisição extra."""
+    resultado = service.executar_busca(
+        api_key=CHAVE,
+        coordenadas=(LAT_CENTRO, LNG_CENTRO),
+        diretorio=str(tmp_path / "saida"),
+    )
+
+    analise = resultado["analise_termos"]
+    assert analise["total_unico"] == 1
+    assert [l["termo"] for l in analise["termos"]] == ["provedor de internet"]
+    assert analise["termos"][0]["requisicoes"] == 1
+
+
+def test_analise_e_serializavel_em_json(api_falsa, tmp_path):
+    """O exemplo de Flask no README devolve este dict via jsonify."""
+    import json
+
+    resultado = service.executar_busca(
+        api_key=CHAVE,
+        coordenadas=(LAT_CENTRO, LNG_CENTRO),
+        diretorio=str(tmp_path / "saida"),
+    )
+    json.dumps(resultado["analise_termos"])   # não deve levantar

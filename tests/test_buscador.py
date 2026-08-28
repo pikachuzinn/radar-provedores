@@ -445,3 +445,76 @@ def test_fecha_a_sessao_http(montar):
     b, sessao = montar({})
     b.fechar()
     assert sessao.fechada
+
+
+# ---------------------------------------------------------------------------
+# Instrumentação da sobreposição entre termos
+# ---------------------------------------------------------------------------
+
+def test_registra_os_ids_que_cada_termo_trouxe(montar, sem_pausa, monkeypatch):
+    """
+    O conjunto por termo precisa incluir os repetidos. Registrar só os inéditos
+    daria todo o crédito ao primeiro termo e tornaria a medida dependente
+    da ordem — exatamente o defeito que a análise existe para evitar.
+    """
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["termo a", "termo b"])
+
+    compartilhado = lugar_novo("comum", "Comum", -27.60, -48.55)
+    exclusivo_b = lugar_novo("so_b", "Só do B", -27.61, -48.56)
+
+    respostas = [
+        RespostaFalsa(resposta_busca_nova([compartilhado])),
+        RespostaFalsa(resposta_busca_nova([compartilhado, exclusivo_b])),
+    ]
+    b, _ = montar({URL_PLACES_BUSCA: respostas})
+
+    provedores = b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+
+    assert len(provedores) == 2                          # deduplicado no resultado
+    assert b.ids_por_termo["termo a"] == {"comum"}
+    assert b.ids_por_termo["termo b"] == {"comum", "so_b"}   # o repetido conta
+
+
+def test_conta_as_requisicoes_gastas_por_termo(montar, sem_pausa, monkeypatch):
+    """Sem isso não dá para estimar a economia de cortar um termo."""
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["termo"])
+    monkeypatch.setattr(mod, "MAX_PAGINAS", 3)
+
+    paginas = [
+        RespostaFalsa(resposta_busca_nova([lugar_novo("a", "A", -27.6, -48.5)], "T1")),
+        RespostaFalsa(resposta_busca_nova([lugar_novo("b", "B", -27.6, -48.5)], "T2")),
+        RespostaFalsa(resposta_busca_nova([lugar_novo("c", "C", -27.6, -48.5)])),
+    ]
+    b, _ = montar({URL_PLACES_BUSCA: paginas})
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+
+    assert b.requisicoes_por_termo == {"termo": 3}
+
+
+def test_descartados_pelo_raio_nao_entram_na_analise(montar, sem_pausa, monkeypatch):
+    """Não faz sentido creditar a um termo um resultado que foi jogado fora."""
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["termo"])
+    monkeypatch.setattr(mod, "RAIO_ESTRITO", True)
+
+    lugares = [
+        lugar_novo("perto", "Alfa", -27.5960, -48.5490),
+        lugar_novo("longe", "Beta", -26.3044, -48.8487),
+    ]
+    b, _ = montar(rotas_novas(lugares))
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+
+    assert b.ids_por_termo["termo"] == {"perto"}
+
+
+def test_instrumentacao_reinicia_a_cada_busca(montar, sem_pausa, monkeypatch):
+    """Uma segunda busca não pode herdar os números da primeira."""
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["termo"])
+
+    b, _ = montar(rotas_novas([lugar_novo("pid1", "Alfa", -27.6, -48.5)]))
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+    primeira = dict(b.ids_por_termo)
+
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+
+    assert b.ids_por_termo == primeira
+    assert len(b.ids_por_termo) == 1

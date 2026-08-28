@@ -181,6 +181,13 @@ class BuscadorProvedores:
         self._caminho_cache = caminho_cache
         self._cache: dict = carregar_cache(caminho_cache)
 
+        # Instrumentação da última busca, preenchida por buscar_todos.
+        # Sai de graça: são os mesmos resultados que a busca já percorre, e
+        # permitem medir a sobreposição entre os termos sem nenhuma
+        # requisição extra à API. Ver analise_termos.py.
+        self.ids_por_termo: dict[str, set[str]] = {}
+        self.requisicoes_por_termo: dict[str, int] = {}
+
         # Entradas adicionadas ao cache desde a última gravação em disco.
         # Gravar a cada nova entrada reescreveria o arquivo JSON inteiro a cada
         # place_id — custo O(n²) em buscas grandes.
@@ -390,6 +397,9 @@ class BuscadorProvedores:
         provedores: list[dict] = []
         raio_km = raio / 1000
 
+        self.ids_por_termo = {}
+        self.requisicoes_por_termo = {}
+
         for i, termo in enumerate(TERMOS_DE_BUSCA, start=1):
             # Notifica o início da etapa (novos_provedores=None = ainda buscando)
             notificar({
@@ -402,7 +412,7 @@ class BuscadorProvedores:
             })
 
             try:
-                registros = self._buscar_por_termo(termo, lat, lng, raio)
+                registros = self.buscar_por_termo(termo, lat, lng, raio)
             except (ConnectionError, ErroAPI) as exc:
                 notificar({
                     "etapa": i,
@@ -419,12 +429,12 @@ class BuscadorProvedores:
                 continue
 
             novos = 0
+            ids_do_termo: set[str] = set()
+
             for registro in registros:
                 place_id = registro.get("place_id")
-                if not place_id or place_id in ids_vistos:
+                if not place_id:
                     continue
-
-                ids_vistos.add(place_id)
 
                 # O raio da Places API é um viés de relevância, não um filtro —
                 # a API devolve resultados bem além dele. Descartamos aqui, ANTES
@@ -437,6 +447,16 @@ class BuscadorProvedores:
                     )
                     continue
 
+                # Registra antes da deduplicação: para medir sobreposição é
+                # preciso saber tudo que o termo trouxe, e não apenas o que
+                # sobrou depois dos termos anteriores. O contador de novos é
+                # dependente da ordem; este conjunto não é.
+                ids_do_termo.add(place_id)
+
+                if place_id in ids_vistos:
+                    continue
+                ids_vistos.add(place_id)
+
                 registro["distancia_km"] = distancia if distancia is not None else ""
 
                 # Só a API legada precisa de uma chamada extra por estabelecimento:
@@ -446,6 +466,8 @@ class BuscadorProvedores:
 
                 provedores.append(registro)
                 novos += 1
+
+            self.ids_por_termo[termo] = ids_do_termo
 
             # Notifica o resultado da etapa com o número de novos encontrados
             notificar({
@@ -467,17 +489,21 @@ class BuscadorProvedores:
     # Helpers internos
     # ------------------------------------------------------------------
 
-    def _buscar_por_termo(
+    def buscar_por_termo(
         self, termo: str, lat: float, lng: float, raio: int
     ) -> list[dict]:
         """
         Busca um termo percorrendo todas as páginas disponíveis.
+
+        Registra em requisicoes_por_termo quantas requisições foram gastas, o
+        que permite estimar a economia de cortar um termo redundante.
 
         Returns:
             Lista de registros normalizados, ainda sem distância nem deduplicação.
         """
         registros: list[dict] = []
         token: Optional[str] = None
+        paginas_lidas = 0
 
         for pagina in range(1, MAX_PAGINAS + 1):
             # A API legada exige um atraso antes de usar o token da próxima
@@ -490,6 +516,8 @@ class BuscadorProvedores:
                 time.sleep(self._cliente.intervalo_paginacao)
 
             da_pagina, token = self._cliente.buscar_pagina(termo, lat, lng, raio, token)
+            paginas_lidas += 1
+            self.requisicoes_por_termo[termo] = paginas_lidas
             registros.extend(da_pagina)
             logger.debug(
                 "Página %d: %d resultado(s) para '%s'.", pagina, len(da_pagina), termo
