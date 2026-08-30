@@ -15,6 +15,7 @@ python main.py -e "Itajaí, SC" -r 10000    # terminal
 
 - **Interface gráfica** em tkinter, sem dependências extras, empacotável em executável único
 - **Assistente de primeira execução** que conduz a criação da chave no Google Cloud e a verifica ao final
+- **Erros traduzidos em causa e correção**, com botão que abre a página exata onde resolver
 - Usa a **Places API (New)** por padrão, com suporte à API legada para projetos antigos
 - Aceita endereço textual ou coordenadas geográficas como entrada
 - Busca provedores num raio configurável (padrão: 5 km)
@@ -29,7 +30,7 @@ python main.py -e "Itajaí, SC" -r 10000    # terminal
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
 - **Relatório de sobreposição dos termos** (`--relatorio-termos`) — mostra quais termos de busca são redundantes, sem custar nenhuma requisição extra
 - **Calibração multi-cidade** (`calibrar_termos.py`) — cruza várias regiões e recomenda o conjunto de termos que serve a todas elas
-- **Suíte de testes** com 196 casos, sem dependência de rede nem de chave de API
+- **Suíte de testes** com 231 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -606,6 +607,8 @@ buscador_provedores/
 ├── main.py            # CLI e modo interativo — delega lógica ao service.py
 ├── calibrar_termos.py # CLI de calibração multi-cidade dos termos de busca
 ├── credenciais.py     # Onde a chave de API é procurada e guardada
+├── diagnostico.py     # Traduz erros da API em causa provável e correção
+├── dialogos.py        # Caixas de diálogo compartilhadas pela interface
 ├── empacotar.spec     # Receita do PyInstaller para gerar o executável
 ├── service.py         # Camada de serviço sem I/O (Flask, GUI, testes)
 ├── buscador.py        # Orquestração: geocodificação, paginação, dedup, cache, logs
@@ -627,6 +630,7 @@ buscador_provedores/
 │   ├── test_calibracao.py
 │   ├── test_clientes.py
 │   ├── test_credenciais.py
+│   ├── test_diagnostico.py
 │   ├── test_gui.py
 │   ├── test_exportador.py
 │   ├── test_filtro_log.py
@@ -744,6 +748,7 @@ python -m pytest tests/test_buscador.py
 | `test_credenciais.py` | Prioridade das origens da chave, gravação sem destruir o `.env`, permissão do arquivo |
 | `test_gui.py` | Ordenação da tabela, comando de abrir pasta, mensagens de erro |
 | `test_assistente.py` | Destino dos links do Console e presença dos avisos que evitam suporte |
+| `test_diagnostico.py` | Classificação por `reason`, escolha da página de correção e consistência do catálogo |
 
 Cada correção e cada garantia da migração foi validada por **teste de mutação**:
 reintroduzir o defeito no código faz a suíte falhar. Um teste que passa nos dois
@@ -766,17 +771,64 @@ cenários não protege nada.
 
 ## Solução de problemas
 
-| Mensagem de erro | Causa provável | Solução |
+O programa traduz os erros da API do Google em **causa provável e passos de
+correção**, com um botão que abre a página exata onde resolver. Na interface
+gráfica isso aparece numa caixa de diálogo; no terminal, impresso ao final.
+
+### Por que a tradução é necessária
+
+O Google responde quase sempre a mesma coisa para problemas de configuração:
+`PERMISSION_DENIED` com uma mensagem em inglês. Mas as causas por trás são
+diferentes e pedem correções diferentes:
+
+| A API diz | Na verdade pode ser | O que fazer |
 |---|---|---|
-| `Chave de API não encontrada` | Arquivo `.env` ausente ou mal configurado | Crie o `.env` a partir do `.env.example` |
-| `Chave de API inválida ou sem permissão` | API não ativada no Google Cloud | Ative Geocoding API e Places API (New) no Console |
-| `Places API (New) não ativada no projeto` | Ativou "Places API" (legada) em vez de "Places API (New)" | São produtos distintos no Console; ative a *(New)* |
-| `sem permissão para a Places API (Legacy)` | Projeto criado a partir de 01/03/2025 não tem acesso à API legada | Defina `USAR_PLACES_NOVA = True` em `config.py` |
-| `Cota da Places API esgotada` | Passou da cota gratuita mensal do SKU | Reduza `TERMOS_DE_BUSCA` ou `MAX_PAGINAS`, ou aguarde a virada do mês |
-| `Endereço não encontrado` | Endereço muito vago ou incorreto | Adicione cidade, estado ou CEP |
-| `Sem conexão com a internet` | Falha de rede | Verifique sua conexão |
-| `Para exportar em Excel instale: pip install pandas openpyxl` | Dependências opcionais ausentes | Execute `pip install pandas openpyxl` |
-| `Sem permissão para criar arquivo` | Pasta bloqueada ou arquivo aberto no Excel | Feche o Excel ou escolha outra pasta com `-o` |
+| `PERMISSION_DENIED` | Faturamento não ativado | Vincular conta de faturamento ao projeto |
+| `PERMISSION_DENIED` | API não ativada no projeto | Ativar Places API (New) — não a "Places API" |
+| `PERMISSION_DENIED` | Chave restrita a outras APIs | Incluir as duas APIs nas restrições da chave |
+| `PERMISSION_DENIED` | Chave restrita por IP ou site | Trocar a restrição de aplicativo para Nenhuma |
+
+A distinção vem do identificador `reason`, que a API envia no bloco `details`
+da resposta — `SERVICE_DISABLED`, `BILLING_DISABLED`, `API_KEY_INVALID`,
+`API_KEY_SERVICE_BLOCKED` e outros. É por ele que a classificação é feita, e
+não pelo texto da mensagem: o texto vem em inglês e o Google o reescreve de
+tempos em tempos, enquanto o `reason` é documentado e estável.
+
+Quando a resposta traz um bloco `Help`, o link dele já vem com o id do projeto
+afetado, e é esse que o botão abre — melhor do que uma página genérica que
+obrigaria a achar o projeto certo na mão.
+
+### Exemplo de saída
+
+```
+A chave de API não é válida
+
+O Google não reconheceu a chave. Costuma ser colagem incompleta, espaço
+sobrando, ou uma chave que foi apagada do projeto. Uma chave do Google Maps
+começa com "AIza" e tem 39 caracteres.
+
+Como corrigir:
+  1. Abra a página de credenciais e copie a chave de novo, inteira.
+  2. Cole no campo de chave e clique em Testar.
+  3. Se ela não estiver mais na lista, crie uma nova.
+
+Página: https://console.cloud.google.com/apis/credentials
+
+Mensagem original do Google: API key not valid. Please pass a valid API key.
+```
+
+A mensagem original do Google é sempre preservada — serve para pesquisar ou
+abrir chamado, mas fica em segundo plano porque sozinha ela confunde.
+
+### Outros problemas
+
+| Mensagem | Causa provável | Solução |
+|---|---|---|
+| `Chave de API não encontrada` | Nenhuma chave configurada | Abra a interface gráfica e use o assistente, ou crie o `.env` |
+| `Endereço não encontrado` | Endereço muito vago | Adicione cidade, estado ou CEP |
+| `Sem conexão com a internet` | Falha de rede | Em rede corporativa, confirme com o TI se `googleapis.com` está liberado |
+| `Para exportar em Excel instale: pip install openpyxl` | Dependência opcional ausente | Execute `pip install openpyxl` |
+| `Sem permissão para criar arquivo` | Pasta bloqueada ou arquivo aberto no Excel | Feche o Excel ou escolha outra pasta |
 
 ---
 

@@ -28,6 +28,7 @@ import webbrowser
 from tkinter import messagebox, ttk
 
 import credenciais
+import dialogos
 from service import testar_chave
 
 TITULO = "Configuração inicial"
@@ -323,7 +324,7 @@ class Assistente(tk.Toplevel):
             if self.winfo_exists():
                 self.after(120, self._drenar_fila)
 
-    def _mostrar_resultado_teste(self, ok: bool, mensagem: str) -> None:
+    def _mostrar_resultado_teste(self, ok: bool, mensagem: str, diag: dict | None = None) -> None:
         self.botao_verificar.configure(state="normal")
         self._verificada = ok
         self.rotulo_teste.configure(
@@ -331,6 +332,10 @@ class Assistente(tk.Toplevel):
             style="Ok.TLabel" if ok else "Erro.TLabel",
             wraplength=520,
         )
+        # Errar aqui é o caso esperado — é a etapa em que se descobre o que
+        # ficou faltando lá atrás. Mostrar a correção fecha o ciclo.
+        if not ok and diag:
+            dialogos.mostrar_diagnostico(self, diag, TITULO)
 
     def _concluir(self) -> None:
         chave = self.var_chave.get().strip()

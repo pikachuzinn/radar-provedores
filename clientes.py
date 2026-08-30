@@ -36,6 +36,7 @@ from typing import Optional
 
 import requests
 
+import diagnostico
 from config import (
     CAMPOS_DETALHES,
     CAMPOS_PLACES_NOVA,
@@ -57,7 +58,18 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class ErroAPI(Exception):
-    """Levantado para erros inesperados retornados pela API do Google."""
+    """
+    Erro retornado pela API do Google.
+
+    Carrega o diagnóstico (ver diagnostico.py) para que a interface possa
+    mostrar a causa provável e o caminho de correção, em vez de repassar a
+    mensagem em inglês do Google. A mensagem da exceção em si é o título do
+    diagnóstico — uma linha, adequada a log e a resumo.
+    """
+
+    def __init__(self, mensagem: str, diag: dict | None = None) -> None:
+        super().__init__(mensagem)
+        self.diagnostico = diag or {}
 
 
 # ---------------------------------------------------------------------------
@@ -206,33 +218,26 @@ class ClienteNovo(ClientePlaces):
 
     def _tratar_erro(self, resposta) -> None:
         """
-        Converte a resposta de erro da API nova em ErroAPI com mensagem útil.
+        Converte a resposta de erro da API nova em ErroAPI com diagnóstico.
 
-        Corpo esperado: {"error": {"code": 403, "message": "...", "status": "..."}}
+        A classificação usa o identificador `reason` do bloco `details`, que é
+        estável e documentado, em vez do texto da mensagem — que vem em inglês
+        e é reescrito pelo Google de tempos em tempos. Ver diagnostico.py.
         """
         if resposta.status_code < 400:
             return
 
         try:
-            erro = resposta.json().get("error", {})
+            corpo = resposta.json()
         except ValueError:
-            erro = {}
+            corpo = None
 
-        status = erro.get("status", "")
-        mensagem = erro.get("message", "sem detalhes")
-
-        if resposta.status_code == 403 or status == "PERMISSION_DENIED":
-            raise ErroAPI(
-                "Chave de API inválida ou Places API (New) não ativada no projeto. "
-                "Ative 'Places API (New)' no Google Cloud Console e confira as "
-                f"restrições da chave. Detalhe: {mensagem}"
-            )
-        if resposta.status_code == 429 or status == "RESOURCE_EXHAUSTED":
-            raise ErroAPI(f"Cota da Places API esgotada. Detalhe: {mensagem}")
-        if resposta.status_code == 400:
-            raise ErroAPI(f"Requisição rejeitada pela Places API: {mensagem}")
-
-        raise ErroAPI(f"Erro HTTP {resposta.status_code} na Places API: {mensagem}")
+        diag = diagnostico.diagnosticar(resposta.status_code, corpo)
+        logger.debug(
+            "Erro da Places API classificado como '%s' (HTTP %d).",
+            diag["causa"], resposta.status_code,
+        )
+        raise ErroAPI(diagnostico.resumo(diag), diag)
 
     def buscar_pagina(self, termo, lat, lng, raio, token=None):
         # Na paginação, todos os demais parâmetros devem ser idênticos aos da
@@ -329,7 +334,8 @@ class ClienteLegado(ClientePlaces):
 
         resposta = self._executar("GET", URL_TEXT_SEARCH, params=params)
         if resposta.status_code >= 400:
-            raise ErroAPI(f"Erro HTTP {resposta.status_code} na Places Text Search.")
+            diag = diagnostico.diagnosticar(resposta.status_code, None)
+            raise ErroAPI(diagnostico.resumo(diag), diag)
 
         dados = resposta.json()
         status = dados.get("status")
@@ -337,11 +343,10 @@ class ClienteLegado(ClientePlaces):
         if status == "ZERO_RESULTS":
             return [], None
         if status == "REQUEST_DENIED":
-            raise ErroAPI(
-                "Chave de API inválida ou sem permissão para a Places API (Legacy). "
-                "Projetos do Cloud criados a partir de 01/03/2025 não têm acesso a ela — "
-                "defina USAR_PLACES_NOVA = True em config.py."
+            diag = diagnostico.diagnosticar_legado(
+                status, dados.get("error_message", ""), places_legada=True
             )
+            raise ErroAPI(diagnostico.resumo(diag), diag)
         if status != "OK":
             logger.warning("Status inesperado '%s' para o termo '%s'.", status, termo)
             return [], None

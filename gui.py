@@ -34,6 +34,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import assistente
 import credenciais
+import dialogos
 from analise_termos import formatar_relatorio_multi
 from config import DIRETORIO_SAIDA, MAX_PAGINAS, RAIO_PADRAO, TERMOS_DE_BUSCA
 from service import calibrar_termos, executar_busca, testar_chave
@@ -122,6 +123,8 @@ class Aplicacao(tk.Tk):
 
         self._ultimos_arquivos: list[str] = []
         self._ultima_calibracao: dict | None = None
+        # Diagnóstico da última falha, para exibir com a correção ao final
+        self._ultimo_diagnostico: dict | None = None
 
         self._montar_estilo()
         self._montar_chave()
@@ -540,6 +543,7 @@ class Aplicacao(tk.Tk):
 
         self.tabela.delete(*self.tabela.get_children())
         self.rotulo_total.configure(text="")
+        self._ultimo_diagnostico = None
         self.botao_abrir_pasta.configure(state="disabled")
         self.progresso.configure(value=0, maximum=len(TERMOS_DE_BUSCA))
         self._definir_ocupado(True, "Buscando...")
@@ -744,15 +748,20 @@ class Aplicacao(tk.Tk):
             self._definir_ocupado(False, "Falhou.")
             messagebox.showerror(TITULO, dado)
         elif evento == "teste_chave":
-            ok, mensagem = dado
+            ok, mensagem, diag = dado
             self.rotulo_chave.configure(
                 text=("✔ " if ok else "✘ ") + mensagem,
                 style="Ok.TLabel" if ok else "Erro.TLabel",
             )
+            if not ok and diag:
+                dialogos.mostrar_diagnostico(self, diag, TITULO)
 
     def _evento_progresso(self, info: dict) -> None:
         if info.get("erro"):
             self.rotulo_progresso.configure(text=info["mensagem"], style="Erro.TLabel")
+            # Guardado para o fim: interromper a busca com uma caixa de diálogo
+            # a cada termo que falha seria insuportável.
+            self._ultimo_diagnostico = info.get("diagnostico") or self._ultimo_diagnostico
             return
 
         self.rotulo_progresso.configure(text=info["mensagem"], style="Discreto.TLabel")
@@ -776,9 +785,14 @@ class Aplicacao(tk.Tk):
     def _evento_resultado(self, resultado: dict) -> None:
         self._definir_ocupado(False)
 
+        diagnostico_da_falha = resultado.get("diagnostico") or self._ultimo_diagnostico
+
         if resultado["erro"] and not resultado["provedores"]:
             self.rotulo_progresso.configure(text="Nada encontrado.", style="Erro.TLabel")
-            messagebox.showerror(TITULO, resultado["erro"])
+            if diagnostico_da_falha:
+                dialogos.mostrar_diagnostico(self, diagnostico_da_falha, TITULO)
+            else:
+                messagebox.showerror(TITULO, resultado["erro"])
             return
 
         self._preencher_tabela(resultado["provedores"])
@@ -790,10 +804,18 @@ class Aplicacao(tk.Tk):
         self.progresso.configure(value=self.progresso["maximum"])
 
         if total == 0:
-            self.rotulo_progresso.configure(
-                text="Nenhum provedor nesta área. Tente aumentar o raio.",
-                style="Discreto.TLabel",
-            )
+            # Zero por falha de API é diferente de zero por falta de cadastro,
+            # e o conselho de aumentar o raio só vale no segundo caso.
+            if diagnostico_da_falha:
+                self.rotulo_progresso.configure(
+                    text="A busca falhou.", style="Erro.TLabel"
+                )
+                dialogos.mostrar_diagnostico(self, diagnostico_da_falha, TITULO)
+            else:
+                self.rotulo_progresso.configure(
+                    text="Nenhum provedor nesta área. Tente aumentar o raio.",
+                    style="Discreto.TLabel",
+                )
             return
 
         self.rotulo_progresso.configure(text="Concluído.", style="Ok.TLabel")

@@ -34,6 +34,7 @@ from typing import Callable, Optional
 
 import requests
 
+import diagnostico
 from cache import carregar_cache, salvar_cache
 from clientes import ErroAPI, criar_cliente, mesclar
 from config import (
@@ -295,13 +296,11 @@ class BuscadorProvedores:
                 f"Endereço não encontrado: '{endereco}'. "
                 "Tente fornecer mais detalhes (cidade, estado, CEP)."
             )
-        if status == "REQUEST_DENIED":
-            raise ErroAPI(
-                "Chave de API inválida ou sem permissão para a Geocoding API. "
-                "Verifique sua chave no Google Cloud Console."
-            )
         if status != "OK":
-            raise ErroAPI(f"Geocoding API retornou status inesperado: {status}")
+            # A Geocoding API responde HTTP 200 com o problema no corpo; a
+            # classificação segue o mesmo catálogo dos demais erros.
+            diag = diagnostico.diagnosticar_legado(status, dados.get("error_message", ""))
+            raise ErroAPI(diagnostico.resumo(diag), diag)
 
         localizacao = dados["results"][0]["geometry"]["location"]
         lat, lng = localizacao["lat"], localizacao["lng"]
@@ -431,6 +430,8 @@ class BuscadorProvedores:
                     "total_acumulado"  (int)  — total geral até o momento
                     "erro"             (str | None) — mensagem da falha, quando
                         a busca daquele termo não pôde ser concluída
+                    "diagnostico"      (dict | None) — causa provável e correção
+                        da falha; ver diagnostico.py
             deve_cancelar: Consultada entre termos e entre páginas. Quando
                 devolve True, a busca para e retorna o que já foi coletado —
                 o atributo `cancelado` fica marcado. Serve para interfaces em
@@ -465,6 +466,7 @@ class BuscadorProvedores:
                 "novos_provedores": None,
                 "total_acumulado": len(provedores),
                 "erro": None,
+                "diagnostico": None,
             })
 
             try:
@@ -481,6 +483,9 @@ class BuscadorProvedores:
                     # silencioso "nenhum resultado" e o conselho ao usuário
                     # ("aumente o raio") passa a ser enganoso.
                     "erro": str(exc),
+                    # A causa provável e o caminho de correção, para que a
+                    # interface não precise repassar a mensagem do Google.
+                    "diagnostico": diagnostico.de_excecao(exc),
                 })
                 continue
 
@@ -533,6 +538,7 @@ class BuscadorProvedores:
                 "novos_provedores": novos,
                 "total_acumulado": len(provedores),
                 "erro": None,
+                "diagnostico": None,
             })
 
         # Garante que nenhuma entrada de cache obtida nesta busca se perca,

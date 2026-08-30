@@ -62,6 +62,7 @@ Exemplo de uso em GUI (tkinter):
 import logging
 from typing import Callable, Optional
 
+import diagnostico
 from analise_termos import analisar, consolidar
 from buscador import BuscadorProvedores, ErroAPI, ErroLocalizacao
 from config import DIRETORIO_SAIDA, RAIO_PADRAO
@@ -109,6 +110,8 @@ def executar_busca(
             "coordenadas" : tuple[float, float] | None — lat/lng usadas na busca
             "erro"        : str | None — mensagem de erro, ou None se bem-sucedido
             "cancelado"   : bool       — True se a busca foi interrompida a pedido
+            "diagnostico" : dict | None — causa provável e passos de correção,
+                            quando houve erro; ver diagnostico.py
             "analise_termos" : dict — sobreposição entre os termos de busca,
                             calculada a partir dos dados que a própria busca já
                             produziu, sem nenhuma requisição extra à API.
@@ -132,7 +135,7 @@ def executar_busca(
                 lat, lng = buscador.geocodificar(endereco)
                 logger.info("Geocodificação concluída: (%.6f, %.6f)", lat, lng)
             except (ErroLocalizacao, ErroAPI, ConnectionError) as exc:
-                return _erro(str(exc))
+                return _erro(str(exc), diagnostico.de_excecao(exc))
         else:
             lat, lng = coordenadas  # type: ignore[misc]
 
@@ -146,7 +149,7 @@ def executar_busca(
                 deve_cancelar=deve_cancelar,
             )
         except (ConnectionError, ErroAPI) as exc:
-            return _erro(str(exc))
+            return _erro(str(exc), diagnostico.de_excecao(exc))
 
         cancelado = buscador.cancelado
 
@@ -163,6 +166,7 @@ def executar_busca(
             "erro": None,
             "analise_termos": analise,
             "cancelado": cancelado,
+            "diagnostico": None,
         }
 
     # --- Exportação ---
@@ -184,6 +188,7 @@ def executar_busca(
             "erro": f"Busca concluída, mas falha ao exportar: {exc}",
             "analise_termos": analise,
             "cancelado": cancelado,
+            "diagnostico": None,
         }
 
     return {
@@ -194,10 +199,11 @@ def executar_busca(
         "erro": None,
         "analise_termos": analise,
         "cancelado": cancelado,
+        "diagnostico": None,
     }
 
 
-def _erro(mensagem: str) -> dict:
+def _erro(mensagem: str, diag: dict | None = None) -> dict:
     """
     Monta um dict de resultado padronizado para situações de erro.
 
@@ -215,6 +221,7 @@ def _erro(mensagem: str) -> dict:
         "erro": mensagem,
         "analise_termos": {},
         "cancelado": False,
+        "diagnostico": diag,
     }
 
 
@@ -353,23 +360,22 @@ def testar_chave(api_key: str) -> tuple[bool, str]:
         api_key: Chave a verificar.
 
     Returns:
-        (True, mensagem de sucesso) ou (False, motivo da recusa).
+        Tripla (ok, mensagem de uma linha, diagnóstico). O diagnóstico vem
+        preenchido apenas em caso de falha, com a causa provável e os passos
+        de correção — ver diagnostico.py.
     """
     if not api_key.strip():
-        return False, "Nenhuma chave informada."
+        return False, "Nenhuma chave informada.", None
 
     try:
         with BuscadorProvedores(api_key=api_key) as buscador:
             buscador.geocodificar("Florianópolis, SC")
-    except ErroAPI as exc:
-        return False, str(exc)
-    except ConnectionError as exc:
-        return False, f"Sem conexão para verificar a chave: {exc}"
     except ErroLocalizacao:
         # A chave funcionou; o endereço de teste é que não foi encontrado —
         # improvável, mas não é motivo para reprovar a chave.
-        return True, "Chave aceita pela Geocoding API."
+        return True, "Chave aceita pela Geocoding API.", None
     except Exception as exc:                              # noqa: BLE001
-        return False, f"Falha inesperada ao verificar a chave: {exc}"
+        diag = diagnostico.de_excecao(exc)
+        return False, diag["titulo"], diag
 
-    return True, "Chave aceita pela Geocoding API."
+    return True, "Chave aceita pela Geocoding API.", None

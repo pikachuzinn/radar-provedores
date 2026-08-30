@@ -20,6 +20,7 @@ import sys
 
 from dotenv import load_dotenv
 
+import diagnostico
 from analise_termos import formatar_relatorio
 from config import RAIO_PADRAO, DIRETORIO_SAIDA
 from service import executar_busca
@@ -142,6 +143,7 @@ exemplos:
 # "nenhum provedor encontrado", escondendo um erro de API atrás de um conselho
 # enganoso ("aumente o raio").
 _falhas_da_busca: list[str] = []
+_diagnosticos_da_busca: list[dict] = []
 
 
 def _imprimir_progresso(info: dict) -> None:
@@ -163,6 +165,8 @@ def _imprimir_progresso(info: dict) -> None:
 
     if erro:
         _falhas_da_busca.append(erro)
+        if info.get("diagnostico"):
+            _diagnosticos_da_busca.append(info["diagnostico"])
         print(f"  ⚠ {msg}", file=sys.stderr)
     elif novos is None:
         # Etapa em andamento
@@ -298,7 +302,9 @@ def main() -> int:
 
     # ---- Trata erro retornado pelo serviço ----
     if resultado["erro"]:
-        print(f"\n[ERRO] {resultado['erro']}", file=sys.stderr)
+        print(f"\n[ERRO] {resultado['erro']}\n", file=sys.stderr)
+        if resultado.get("diagnostico"):
+            print(diagnostico.texto_completo(resultado["diagnostico"]), file=sys.stderr)
         return 1
 
     # ---- Exibe resumo ----
@@ -310,8 +316,11 @@ def main() -> int:
         # resultados por ausência de cadastro — e pede orientação diferente.
         # (O relatório de termos não se aplica: não há sobreposição a medir.)
         if _falhas_da_busca:
-            print("Nenhum provedor encontrado: todas as buscas falharam.", file=sys.stderr)
-            print(f"\nCausa: {_falhas_da_busca[0]}", file=sys.stderr)
+            print("Nenhum provedor encontrado: todas as buscas falharam.\n", file=sys.stderr)
+            if _diagnosticos_da_busca:
+                print(diagnostico.texto_completo(_diagnosticos_da_busca[0]), file=sys.stderr)
+            else:
+                print(f"Causa: {_falhas_da_busca[0]}", file=sys.stderr)
             return 1
 
         print("Nenhum provedor de internet encontrado para esta localização.")

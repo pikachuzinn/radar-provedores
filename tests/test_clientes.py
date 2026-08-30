@@ -205,26 +205,34 @@ def test_api_nova_nao_exige_espera_entre_paginas():
 # Places API (New) — erros
 # ---------------------------------------------------------------------------
 
-def test_erro_403_explica_como_ativar_a_api(cliente_novo):
-    """A causa mais comum: projeto sem 'Places API (New)' habilitada."""
+def _capturar_erro(cliente):
+    """Executa a busca esperando ErroAPI e devolve a exceção."""
+    with pytest.raises(ErroAPI) as info:
+        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+    return info.value
+
+
+def test_erro_403_sem_detalhes_aponta_api_desativada(cliente_novo):
+    """Sem `reason` no corpo, o código HTTP é o único indício disponível."""
     cliente, _ = cliente_novo({URL_PLACES_BUSCA: erro_novo(403, "PERMISSION_DENIED")})
 
-    with pytest.raises(ErroAPI, match="Places API \\(New\\) não ativada"):
-        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+    erro = _capturar_erro(cliente)
+
+    assert erro.diagnostico["causa"] == "servico_desativado"
+    assert erro.diagnostico["url"]                      # leva à página de correção
 
 
-def test_erro_429_fala_em_cota(cliente_novo):
+def test_erro_429_e_classificado_como_cota(cliente_novo):
     cliente, _ = cliente_novo({URL_PLACES_BUSCA: erro_novo(429, "RESOURCE_EXHAUSTED")})
-    with pytest.raises(ErroAPI, match="Cota"):
-        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+    assert _capturar_erro(cliente).diagnostico["causa"] == "cota_esgotada"
 
 
-def test_erro_400_repassa_a_mensagem_da_api(cliente_novo):
+def test_mensagem_original_da_api_e_preservada(cliente_novo):
+    """A mensagem em inglês continua acessível para diagnóstico e suporte."""
     cliente, _ = cliente_novo({
         URL_PLACES_BUSCA: erro_novo(400, "INVALID_ARGUMENT", "pageToken expirado")
     })
-    with pytest.raises(ErroAPI, match="pageToken expirado"):
-        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+    assert _capturar_erro(cliente).diagnostico["mensagem_original"] == "pageToken expirado"
 
 
 def test_erro_500_sem_corpo_json_nao_quebra(cliente_novo):
@@ -233,8 +241,51 @@ def test_erro_500_sem_corpo_json_nao_quebra(cliente_novo):
             raise ValueError("não é json")
 
     cliente, _ = cliente_novo({URL_PLACES_BUSCA: SemJson({}, status_code=500)})
-    with pytest.raises(ErroAPI, match="Erro HTTP 500"):
-        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+
+    erro = _capturar_erro(cliente)
+    assert erro.diagnostico["causa"] == "desconhecido"
+    assert str(erro)                                    # sempre há um título
+
+
+def test_reason_da_api_prevalece_sobre_o_codigo_http(cliente_novo):
+    """
+    Um 403 pode ser API desativada, faturamento ou chave restrita. O `reason`
+    distingue; o código HTTP sozinho, não.
+    """
+    corpo = {"error": {
+        "code": 403, "status": "PERMISSION_DENIED", "message": "...",
+        "details": [{
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "BILLING_DISABLED",
+            "metadata": {"service": "places.googleapis.com"},
+        }],
+    }}
+    cliente, _ = cliente_novo({URL_PLACES_BUSCA: RespostaFalsa(corpo, status_code=403)})
+
+    assert _capturar_erro(cliente).diagnostico["causa"] == "faturamento_desativado"
+
+
+def test_link_de_ajuda_da_api_aponta_para_o_projeto_certo(cliente_novo):
+    """
+    Quando a API manda o link, ele já vem com o id do projeto — melhor que
+    qualquer página genérica nossa.
+    """
+    url = "https://console.cloud.google.com/apis/api/places.googleapis.com/overview?project=42"
+    corpo = {"error": {
+        "code": 403, "status": "PERMISSION_DENIED", "message": "disabled",
+        "details": [
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+             "reason": "SERVICE_DISABLED",
+             "metadata": {"service": "places.googleapis.com", "consumer": "projects/42"}},
+            {"@type": "type.googleapis.com/google.rpc.Help",
+             "links": [{"description": "Ativação", "url": url}]},
+        ],
+    }}
+    cliente, _ = cliente_novo({URL_PLACES_BUSCA: RespostaFalsa(corpo, status_code=403)})
+
+    diag = _capturar_erro(cliente).diagnostico
+    assert diag["url"] == url
+    assert "Places API (New)" in diag["titulo"]
 
 
 def test_falha_de_rede_vira_connection_error(cliente_novo):
@@ -326,12 +377,28 @@ def test_zero_results_devolve_lista_vazia(cliente_legado):
 def test_request_denied_sugere_migrar_para_a_api_nova(cliente_legado):
     """
     Projetos do Cloud criados a partir de 01/03/2025 não conseguem ativar a
-    API legada — a mensagem precisa apontar a saída.
+    API legada — a correção precisa apontar a saída.
     """
     cliente, _ = cliente_legado({URL_TEXT_SEARCH: RespostaFalsa({"status": "REQUEST_DENIED"})})
 
-    with pytest.raises(ErroAPI, match="USAR_PLACES_NOVA"):
+    with pytest.raises(ErroAPI) as info:
         cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+
+    correcao = " ".join(info.value.diagnostico["correcao"])
+    assert "USAR_PLACES_NOVA" in correcao
+
+
+def test_request_denied_por_faturamento_e_reconhecido(cliente_legado):
+    """A API legada só dá o texto — mas ele basta para os casos frequentes."""
+    cliente, _ = cliente_legado({URL_TEXT_SEARCH: RespostaFalsa({
+        "status": "REQUEST_DENIED",
+        "error_message": "You must enable Billing on the Google Cloud Project",
+    })})
+
+    with pytest.raises(ErroAPI) as info:
+        cliente.buscar_pagina("provedor", LAT_CENTRO, LNG_CENTRO, 5000)
+
+    assert info.value.diagnostico["causa"] == "faturamento_desativado"
 
 
 def test_pagetoken_substitui_os_demais_parametros(cliente_legado):

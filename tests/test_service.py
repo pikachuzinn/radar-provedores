@@ -25,7 +25,7 @@ from conftest import (
 from config import URL_GEOCODING, URL_PLACES_BUSCA
 
 CHAVES_DO_RETORNO = {"provedores", "arquivos", "total", "coordenadas", "erro",
-                     "analise_termos", "cancelado"}
+                     "analise_termos", "cancelado", "diagnostico"}
 
 
 @pytest.fixture
@@ -235,28 +235,32 @@ def test_analise_e_serializavel_em_json(api_falsa, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_testar_chave_sem_chave_nao_toca_na_rede():
-    ok, mensagem = service.testar_chave("   ")
+    ok, mensagem, diag = service.testar_chave("   ")
     assert ok is False
     assert "Nenhuma chave" in mensagem
+    assert diag is None
 
 
 def test_testar_chave_aprova_quando_a_geocodificacao_responde(servico_falso, payload_geocoding):
     sessoes = servico_falso({URL_GEOCODING: RespostaFalsa(payload_geocoding)})
 
-    ok, mensagem = service.testar_chave(CHAVE)
+    ok, mensagem, diag = service.testar_chave(CHAVE)
 
     assert ok is True
     assert "aceita" in mensagem
+    assert diag is None
     assert sessoes[0].fechada
 
 
 def test_testar_chave_reprova_com_o_motivo_da_api(servico_falso):
     sessoes = servico_falso({URL_GEOCODING: RespostaFalsa({"status": "REQUEST_DENIED"})})
 
-    ok, mensagem = service.testar_chave(CHAVE)
+    ok, mensagem, diag = service.testar_chave(CHAVE)
 
     assert ok is False
-    assert "inválida ou sem permissão" in mensagem
+    assert "chave de API não é válida" in mensagem
+    assert diag["causa"] == "chave_invalida"
+    assert diag["correcao"], "a recusa precisa vir com o caminho de correção"
     assert sessoes[0].fechada
 
 
@@ -264,15 +268,43 @@ def test_testar_chave_distingue_falha_de_rede(servico_falso):
     import requests
     servico_falso({URL_GEOCODING: RespostaFalsa({}, erro=requests.ConnectionError())})
 
-    ok, mensagem = service.testar_chave(CHAVE)
+    ok, mensagem, diag = service.testar_chave(CHAVE)
 
     assert ok is False
     assert "Sem conexão" in mensagem
+    assert diag["causa"] == "sem_conexao"
 
 
 def test_endereco_de_teste_nao_encontrado_nao_reprova_a_chave(servico_falso):
     """Se a API respondeu ZERO_RESULTS, ela aceitou a chave — o resto é detalhe."""
     servico_falso({URL_GEOCODING: RespostaFalsa({"status": "ZERO_RESULTS"})})
 
-    ok, _ = service.testar_chave(CHAVE)
+    ok, _, diag = service.testar_chave(CHAVE)
     assert ok is True
+    assert diag is None
+
+
+def test_erro_de_busca_devolve_o_diagnostico(servico_falso, payload_geocoding):
+    """
+    A interface precisa da causa e da correção, não da mensagem em inglês do
+    Google. Um erro de geocodificação encerra a busca e deve trazer as duas.
+    """
+    sessoes = servico_falso({URL_GEOCODING: RespostaFalsa({
+        "status": "REQUEST_DENIED",
+        "error_message": "You must enable Billing on the Google Cloud Project",
+    })})
+
+    resultado = service.executar_busca(api_key=CHAVE, endereco="Florianópolis, SC")
+
+    assert resultado["erro"]
+    assert resultado["diagnostico"]["causa"] == "faturamento_desativado"
+    assert resultado["diagnostico"]["url"]
+    assert sessoes[0].fechada
+
+
+def test_busca_bem_sucedida_nao_traz_diagnostico(api_falsa, tmp_path):
+    resultado = service.executar_busca(
+        api_key=CHAVE, coordenadas=(LAT_CENTRO, LNG_CENTRO),
+        diretorio=str(tmp_path / "saida"),
+    )
+    assert resultado["diagnostico"] is None

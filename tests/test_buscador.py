@@ -60,14 +60,32 @@ def test_geocodificar_sem_resultado_levanta_erro_localizacao(montar):
 
 def test_geocodificar_chave_invalida_levanta_erro_api(montar):
     b, _ = montar({URL_GEOCODING: RespostaFalsa({"status": "REQUEST_DENIED"})})
-    with pytest.raises(ErroAPI, match="inválida ou sem permissão"):
+
+    with pytest.raises(ErroAPI) as info:
         b.geocodificar("Florianópolis, SC")
 
+    assert info.value.diagnostico["causa"] == "chave_invalida"
 
-def test_geocodificar_status_desconhecido_levanta_erro_api(montar):
+
+def test_geocodificar_sem_faturamento_e_reconhecido(montar):
+    b, _ = montar({URL_GEOCODING: RespostaFalsa({
+        "status": "REQUEST_DENIED",
+        "error_message": "You must enable Billing on the Google Cloud Project",
+    })})
+
+    with pytest.raises(ErroAPI) as info:
+        b.geocodificar("Florianópolis, SC")
+
+    assert info.value.diagnostico["causa"] == "faturamento_desativado"
+
+
+def test_geocodificar_status_desconhecido_preserva_o_status(montar):
     b, _ = montar({URL_GEOCODING: RespostaFalsa({"status": "OVER_QUERY_LIMIT"})})
-    with pytest.raises(ErroAPI, match="OVER_QUERY_LIMIT"):
+
+    with pytest.raises(ErroAPI) as info:
         b.geocodificar("Florianópolis, SC")
+
+    assert info.value.diagnostico["causa"] == "cota_esgotada"
 
 
 def test_geocodificar_sem_rede_vira_connection_error(montar):
@@ -423,7 +441,7 @@ def test_falha_em_um_termo_nao_aborta_a_busca(montar, sem_pausa, monkeypatch):
     # sem o campo `erro`, um problema de API viraria um silencioso zero.
     falhas = [e["erro"] for e in eventos if e["erro"]]
     assert len(falhas) == 1
-    assert "Cota" in falhas[0]
+    assert "cota" in falhas[0].lower()
 
 
 def test_callback_de_progresso_recebe_todas_as_chaves(montar, sem_pausa, monkeypatch):
