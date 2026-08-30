@@ -93,3 +93,43 @@ def test_excel_tem_cabecalho_congelado_e_filtro(tmp_path):
     assert planilha.freeze_panes == "A2"
     assert planilha.auto_filter.ref is not None
     assert [c.value for c in planilha[1]] == list(COLUNAS_SAIDA.values())
+
+
+def test_excel_preserva_numeros_como_numeros(tmp_path):
+    """
+    Distância e nota precisam chegar ao Excel como número, não como texto:
+    do contrário a coluna ordena "10" antes de "9" e o filtro por faixa
+    de distância — o motivo de a coluna existir — não funciona.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+
+    caminho = exportar_excel(DADOS, str(tmp_path))
+    planilha = openpyxl.load_workbook(caminho)["Provedores"]
+
+    cabecalhos = [c.value for c in planilha[1]]
+    coluna_distancia = cabecalhos.index("Distância (km)") + 1
+
+    valor = planilha.cell(row=2, column=coluna_distancia).value
+    assert isinstance(valor, float)
+    assert valor == 1.23
+
+
+def test_excel_nao_depende_de_pandas(monkeypatch, tmp_path):
+    """
+    pandas e numpy somam quase 100 MB no executável distribuído, e eram usados
+    apenas para transportar as linhas até o openpyxl. Este teste impede que a
+    dependência volte sem que alguém perceba.
+    """
+    import builtins
+
+    importar_original = builtins.__import__
+
+    def recusar_pandas(nome, *args, **kwargs):
+        if nome.split(".")[0] in ("pandas", "numpy"):
+            raise ImportError(f"{nome} não deve ser necessário para exportar em Excel")
+        return importar_original(nome, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", recusar_pandas)
+
+    caminho = exportar_excel(DADOS, str(tmp_path))
+    assert caminho.exists()

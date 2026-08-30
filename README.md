@@ -1,11 +1,19 @@
 # Buscador de Provedores de Internet
 
-Script Python para encontrar provedores de internet próximos a uma localização usando a **Google Places API**. Ideal para analistas de viabilidade que precisam mapear a concorrência ou parceiros em uma região.
+Encontra provedores de internet próximos a uma localização usando a **Google Places API**. Feito para analistas de viabilidade que precisam mapear a concorrência ou parceiros em uma região.
+
+Tem **interface gráfica** para o uso do dia a dia e **linha de comando** para automação:
+
+```bash
+python gui.py                              # janela
+python main.py -e "Itajaí, SC" -r 10000    # terminal
+```
 
 ---
 
 ## Funcionalidades
 
+- **Interface gráfica** em tkinter, sem dependências extras, empacotável em executável único
 - Usa a **Places API (New)** por padrão, com suporte à API legada para projetos antigos
 - Aceita endereço textual ou coordenadas geográficas como entrada
 - Busca provedores num raio configurável (padrão: 5 km)
@@ -20,7 +28,7 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
 - **Relatório de sobreposição dos termos** (`--relatorio-termos`) — mostra quais termos de busca são redundantes, sem custar nenhuma requisição extra
 - **Calibração multi-cidade** (`calibrar_termos.py`) — cruza várias regiões e recomenda o conjunto de termos que serve a todas elas
-- **Suíte de testes** com 141 casos, sem dependência de rede nem de chave de API
+- **Suíte de testes** com 177 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -69,6 +77,12 @@ pip install requests python-dotenv
 Para uso com **Excel também**:
 ```bash
 pip install -r requirements.txt
+```
+
+A interface gráfica usa tkinter, que vem com o Python — nenhuma dependência a mais. Em algumas distribuições Linux o tkinter é um pacote separado:
+
+```bash
+sudo apt install python3-tk
 ```
 
 ### 4. Configure a chave de API
@@ -475,13 +489,97 @@ vale para as cidades efetivamente medidas.
 
 ---
 
+## Interface gráfica
+
+```bash
+python gui.py
+```
+
+A janela tem duas abas:
+
+**Buscar provedores** — endereço ou coordenadas, raio, formato de saída e pasta
+de destino. Os resultados aparecem numa tabela ordenável (clique no título da
+coluna); duplo clique numa linha abre o site da empresa. O botão **Cancelar**
+interrompe a busca ao fim da etapa atual, sem gastar o restante da cota, e o
+que já foi encontrado é preservado.
+
+**Calibrar termos** — a calibração multi-cidade descrita acima, com o custo
+estimado antes de rodar e um botão que copia o bloco `TERMOS_DE_BUSCA` pronto
+para colar em `config.py`.
+
+A chave de API fica no topo da janela. Ao salvar, ela vai para a pasta de
+configuração do seu usuário — não para a pasta do programa, que em instalações
+corporativas costuma ser somente leitura:
+
+| Sistema | Local |
+|---|---|
+| Windows | `%APPDATA%\buscador-provedores\.env` |
+| Linux / macOS | `~/.config/buscador-provedores/.env` |
+
+O botão **Testar** faz uma geocodificação de verificação (1 requisição, dentro
+da cota gratuita) e diz se a chave funciona — bem mais direto que descobrir o
+problema no meio de uma busca.
+
+---
+
+## Distribuindo para a equipe
+
+### Gerando o executável
+
+```bash
+pip install pyinstaller
+pyinstaller empacotar.spec
+```
+
+O resultado sai em `dist/` como arquivo único, com cerca de **13 MB**. Não
+requer Python instalado na máquina de destino.
+
+> O PyInstaller **não faz compilação cruzada**: para gerar o `.exe` do Windows é
+> preciso rodar o comando num Windows. O binário gerado no Linux só roda em Linux.
+
+### Cada pessoa usa a própria chave
+
+Não embuta uma chave no executável. Qualquer pessoa que receba o arquivo
+consegue extraí-la, todo o consumo cai numa conta só, e não há como saber quem
+gastou nem revogar o acesso de um usuário específico sem derrubar o de todos.
+
+O programa foi feito para o outro caminho: na primeira execução, cada pessoa
+cola a própria chave, que fica gravada na pasta de configuração dela. Para
+facilitar, oriente a equipe a seguir o passo a passo de *Como obter a chave de
+API do Google Maps*, mais acima neste documento.
+
+Se a empresa preferir centralizar o custo, o caminho no Google Cloud é criar
+uma chave por pessoa dentro do mesmo projeto de faturamento — assim o gasto
+continua consolidado, mas cada chave pode ser monitorada e revogada
+individualmente.
+
+### Antes de distribuir
+
+- **Atribuição**: o rodapé da janela exibe o crédito ao Google Maps, exigido
+  pelas políticas ao mostrar dados de Places fora de um mapa do Google. Não
+  remova.
+- **Cache**: as entradas expiram em 30 dias (`CACHE_VALIDADE_DIAS`). Só o
+  `place_id` pode ser guardado sem prazo.
+- **Redistribuição dos dados**: usar os resultados em análises internas é uma
+  coisa; revender ou publicar as listas extraídas é outra, e esbarra nos Termos
+  de Serviço do Google Maps Platform. Se a intenção for comercializar, vale ler
+  os [Termos](https://cloud.google.com/maps-platform/terms) — a restrição recai
+  sobre os dados obtidos da API, não sobre o programa em si.
+
+---
+
+---
+
 ## Estrutura do projeto
 
 ```
 buscador_provedores/
 │
+├── gui.py             # Interface gráfica (tkinter)
 ├── main.py            # CLI e modo interativo — delega lógica ao service.py
 ├── calibrar_termos.py # CLI de calibração multi-cidade dos termos de busca
+├── credenciais.py     # Onde a chave de API é procurada e guardada
+├── empacotar.spec     # Receita do PyInstaller para gerar o executável
 ├── service.py         # Camada de serviço sem I/O (Flask, GUI, testes)
 ├── buscador.py        # Orquestração: geocodificação, paginação, dedup, cache, logs
 ├── clientes.py        # Clientes HTTP das duas gerações da Places API
@@ -500,6 +598,8 @@ buscador_provedores/
 │   ├── test_buscador.py
 │   ├── test_calibracao.py
 │   ├── test_clientes.py
+│   ├── test_credenciais.py
+│   ├── test_gui.py
 │   ├── test_exportador.py
 │   ├── test_filtro_log.py
 │   └── test_service.py
@@ -560,6 +660,7 @@ Todas as configurações ajustáveis estão em `config.py`:
 | `TERMOS_DE_BUSCA` | Palavras-chave usadas na busca | 5 termos pré-definidos |
 | `MAX_PAGINAS` | Máx. páginas de resultado por termo | `3` (= 60 resultados) |
 | `CAMINHO_CACHE` | Arquivo de cache de Place Details | `".cache_detalhes.json"` |
+| `CACHE_VALIDADE_DIAS` | Validade das entradas de cache, em dias | `30` |
 | `INTERVALO_GRAVACAO_CACHE` | A cada quantas entradas novas o cache vai ao disco | `25` |
 | `RAIO_ESTRITO` | Descarta resultados fora do raio pedido | `False` |
 | `DIRETORIO_SAIDA` | Pasta padrão para os arquivos gerados | `"resultados"` |
@@ -612,6 +713,8 @@ python -m pytest tests/test_buscador.py
 | `test_filtro_log.py` | Mascaramento da chave vinda de loggers filhos e remoção do filtro ao encerrar |
 | `test_exportador.py` | Ordem das colunas, BOM do CSV, campos ausentes, formatação do Excel |
 | `test_service.py` | Contrato de retorno, caminhos de erro, ausência de vazamento entre chamadas |
+| `test_credenciais.py` | Prioridade das origens da chave, gravação sem destruir o `.env`, permissão do arquivo |
+| `test_gui.py` | Ordenação da tabela, comando de abrir pasta, mensagens de erro |
 
 Cada correção e cada garantia da migração foi validada por **teste de mutação**:
 reintroduzir o defeito no código faz a suíte falhar. Um teste que passa nos dois
@@ -627,7 +730,7 @@ cenários não protege nada.
 - **Raio máximo da Places API**: 50.000 metros (50 km). Valores maiores são silenciosamente ignorados pela API.
 - **Dados desatualizados**: telefone e site dependem do que está cadastrado no Google Maps pela própria empresa.
 - **Rate limiting**: pausas automáticas entre chamadas para respeitar os limites. Na API legada há ainda uma espera obrigatória de 2 s antes de usar o token de cada página seguinte — a API nova não exige essa espera, o que torna as buscas visivelmente mais rápidas.
-- **Cache não expira automaticamente**: dados muito antigos podem divergir da realidade. Apague `.cache_detalhes.json` periodicamente ou ao notar inconsistências.
+- **Cache com validade de 30 dias**: entradas mais antigas são descartadas e reconsultadas. As políticas da Places API isentam apenas o `place_id` das restrições de cache — nome, telefone e site não podem ser retidos indefinidamente. Ajuste em `CACHE_VALIDADE_DIAS` apenas depois de conferir os Termos de Serviço aplicáveis ao seu caso.
 - **Com a API nova o cache quase não é exercitado**: como os dados já vêm na busca, não há chamadas de Place Details por estabelecimento para cachear. O cache permanece ativo para consultas pontuais via `obter_detalhes()`.
 
 ---

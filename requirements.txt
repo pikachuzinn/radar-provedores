@@ -2,9 +2,8 @@
 requests>=2.31.0        # Chamadas HTTP à Google Places API
 python-dotenv>=1.0.0    # Leitura do arquivo .env com a chave de API
 
-# Dependências opcionais (necessárias apenas para exportação em Excel)
-pandas>=2.0.0           # Manipulação de dados tabulares
-openpyxl>=3.1.0         # Motor de leitura/escrita .xlsx usado pelo pandas
+# Dependência opcional (necessária apenas para exportação em Excel)
+openpyxl>=3.1.0         # Leitura/escrita de .xlsx
 
 # Dependências de desenvolvimento (necessárias apenas para rodar a suíte de testes)
 pytest>=8.0.0           # Execução dos testes em tests/

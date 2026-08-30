@@ -98,7 +98,11 @@ def exportar_excel(dados: list[dict], diretorio: str = DIRETORIO_SAIDA) -> Path:
     Salva os resultados em um arquivo Excel (.xlsx) com formatação básica:
     cabeçalho em negrito, largura automática de colunas e filtros habilitados.
 
-    Requer: pandas e openpyxl  (`pip install pandas openpyxl`)
+    Requer apenas openpyxl (`pip install openpyxl`). A planilha é montada
+    diretamente pela biblioteca, sem pandas: a única coisa que o pandas fazia
+    aqui era transportar as linhas até o openpyxl, que já era quem escrevia o
+    arquivo e aplicava os estilos. Carregar pandas e numpy só para isso
+    acrescenta cerca de 100 MB ao executável distribuído.
 
     Args:
         dados: Lista de dicts retornada por BuscadorProvedores.buscar_todos().
@@ -108,53 +112,56 @@ def exportar_excel(dados: list[dict], diretorio: str = DIRETORIO_SAIDA) -> Path:
         Caminho absoluto do arquivo criado.
 
     Raises:
-        ImportError: Se pandas ou openpyxl não estiverem instalados.
+        ImportError: Se openpyxl não estiver instalado.
+        PermissionError: Se o arquivo estiver aberto no Excel ou a pasta bloqueada.
     """
     try:
-        import pandas as pd
-        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
     except ImportError as exc:
         raise ImportError(
-            "Para exportar em Excel instale: pip install pandas openpyxl"
+            "Para exportar em Excel instale: pip install openpyxl"
         ) from exc
 
     pasta = Path(diretorio)
     _garantir_diretorio(pasta)
 
     caminho = pasta / f"{_nome_arquivo_base()}.xlsx"
+    cabecalhos = list(COLUNAS_SAIDA.values())
     linhas = _preparar_linhas(dados)
 
-    df = pd.DataFrame(linhas, columns=list(COLUNAS_SAIDA.values()))
+    arquivo = Workbook()
+    planilha = arquivo.active
+    planilha.title = "Provedores"
+
+    planilha.append(cabecalhos)
+    for linha in linhas:
+        # Números seguem como números, e não como texto: assim o Excel ordena
+        # a coluna de distância por grandeza e permite filtrar por faixa.
+        planilha.append([linha[rotulo] for rotulo in cabecalhos])
+
+    # ---- Estilo do cabeçalho ----
+    cor_cabecalho = "1F4E79"  # azul escuro
+    for celula in planilha[1]:
+        celula.font = Font(bold=True, color="FFFFFF")
+        celula.fill = PatternFill("solid", fgColor=cor_cabecalho)
+        celula.alignment = Alignment(horizontal="center")
+
+    # ---- Largura automática ----
+    for indice, rotulo in enumerate(cabecalhos, start=1):
+        maior = max(
+            [len(str(rotulo))] + [len(str(linha[rotulo])) for linha in linhas]
+        )
+        # Limita a largura máxima a 60 caracteres
+        planilha.column_dimensions[get_column_letter(indice)].width = min(maior + 2, 60)
+
+    # ---- Filtros automáticos e cabeçalho congelado ----
+    planilha.auto_filter.ref = planilha.dimensions
+    planilha.freeze_panes = "A2"
 
     try:
-        with pd.ExcelWriter(caminho, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Provedores")
-
-            planilha = writer.sheets["Provedores"]
-
-            # ---- Estilo do cabeçalho ----
-            cor_cabecalho = "1F4E79"  # azul escuro
-            for celula in planilha[1]:
-                celula.font = Font(bold=True, color="FFFFFF")
-                celula.fill = PatternFill("solid", fgColor=cor_cabecalho)
-                celula.alignment = Alignment(horizontal="center")
-
-            # ---- Largura automática ----
-            for idx, coluna in enumerate(df.columns, start=1):
-                max_len = max(
-                    len(str(coluna)),
-                    df[coluna].astype(str).map(len).max() if not df.empty else 0,
-                )
-                # Limita a largura máxima a 60 caracteres
-                planilha.column_dimensions[get_column_letter(idx)].width = min(max_len + 2, 60)
-
-            # ---- Filtros automáticos ----
-            planilha.auto_filter.ref = planilha.dimensions
-
-            # ---- Congela a linha do cabeçalho ----
-            planilha.freeze_panes = "A2"
-
+        arquivo.save(caminho)
     except PermissionError as exc:
         raise PermissionError(
             f"Sem permissão para criar '{caminho}'. "

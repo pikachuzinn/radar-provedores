@@ -78,6 +78,7 @@ def executar_busca(
     formato: str = "csv",
     diretorio: str = DIRETORIO_SAIDA,
     callback_progresso: Optional[Callable[[dict], None]] = None,
+    deve_cancelar: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """
     Executa a busca de provedores de internet e exporta os resultados.
@@ -95,6 +96,9 @@ def executar_busca(
             Recebe um dict com as chaves: etapa, total_etapas, mensagem,
             novos_provedores, total_acumulado e erro.
             Ver BuscadorProvedores.buscar_todos.
+        deve_cancelar: Consultada durante a busca. Devolvendo True, a busca para
+            e o que já foi coletado é exportado normalmente, com "cancelado"
+            marcado no retorno.
 
     Returns:
         Dict com:
@@ -104,6 +108,7 @@ def executar_busca(
             "total"       : int        — quantidade de provedores encontrados
             "coordenadas" : tuple[float, float] | None — lat/lng usadas na busca
             "erro"        : str | None — mensagem de erro, ou None se bem-sucedido
+            "cancelado"   : bool       — True se a busca foi interrompida a pedido
             "analise_termos" : dict — sobreposição entre os termos de busca,
                             calculada a partir dos dados que a própria busca já
                             produziu, sem nenhuma requisição extra à API.
@@ -138,9 +143,12 @@ def executar_busca(
                 lng=lng,
                 raio=raio,
                 callback_progresso=callback_progresso,
+                deve_cancelar=deve_cancelar,
             )
         except (ConnectionError, ErroAPI) as exc:
             return _erro(str(exc))
+
+        cancelado = buscador.cancelado
 
         # Colhido ainda dentro do bloco: são atributos da instância, que sai
         # de escopo ao fim do with.
@@ -154,6 +162,7 @@ def executar_busca(
             "coordenadas": (lat, lng),
             "erro": None,
             "analise_termos": analise,
+            "cancelado": cancelado,
         }
 
     # --- Exportação ---
@@ -174,6 +183,7 @@ def executar_busca(
             "coordenadas": (lat, lng),
             "erro": f"Busca concluída, mas falha ao exportar: {exc}",
             "analise_termos": analise,
+            "cancelado": cancelado,
         }
 
     return {
@@ -183,6 +193,7 @@ def executar_busca(
         "coordenadas": (lat, lng),
         "erro": None,
         "analise_termos": analise,
+        "cancelado": cancelado,
     }
 
 
@@ -203,6 +214,7 @@ def _erro(mensagem: str) -> dict:
         "coordenadas": None,
         "erro": mensagem,
         "analise_termos": {},
+        "cancelado": False,
     }
 
 

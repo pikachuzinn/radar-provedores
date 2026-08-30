@@ -29,6 +29,7 @@ GUI) acumulam um filtro por instância criada.
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import requests
@@ -36,6 +37,7 @@ import requests
 from cache import carregar_cache, salvar_cache
 from clientes import ErroAPI, criar_cliente, mesclar
 from config import (
+    CACHE_VALIDADE_DIAS,
     CAMINHO_CACHE,
     INTERVALO_ENTRE_CHAMADAS,
     INTERVALO_GRAVACAO_CACHE,
@@ -188,6 +190,10 @@ class BuscadorProvedores:
         self.ids_por_termo: dict[str, set[str]] = {}
         self.requisicoes_por_termo: dict[str, int] = {}
 
+        # Marcado quando uma busca é interrompida a pedido de quem chamou.
+        # O resultado parcial continua válido — apenas incompleto.
+        self.cancelado: bool = False
+
         # Entradas adicionadas ao cache desde a última gravação em disco.
         # Gravar a cada nova entrada reescreveria o arquivo JSON inteiro a cada
         # place_id — custo O(n²) em buscas grandes.
@@ -326,9 +332,10 @@ class BuscadorProvedores:
         chave_cache = f"{self._cliente.nome}:{place_id}"
 
         # --- Consulta o cache ---
-        if chave_cache in self._cache:
+        do_cache = self._ler_do_cache(chave_cache)
+        if do_cache is not None:
             logger.debug("Cache hit para place_id '%s'.", place_id)
-            return self._cache[chave_cache]
+            return do_cache
 
         # --- Chama a API ---
         # A pausa de rate limit vive aqui, e não no laço de buscar_todos, para
@@ -348,12 +355,49 @@ class BuscadorProvedores:
         # --- Salva no cache ---
         # A gravação em disco é feita em lote (ver gravar_cache) para não
         # reescrever o arquivo inteiro a cada place_id consultado.
-        self._cache[chave_cache] = resultado
+        self._cache[chave_cache] = {
+            "salvo_em": datetime.now(timezone.utc).isoformat(),
+            "dados": resultado,
+        }
         self._entradas_nao_gravadas += 1
         if self._entradas_nao_gravadas >= INTERVALO_GRAVACAO_CACHE:
             self.gravar_cache()
 
         return resultado
+
+    def _ler_do_cache(self, chave: str):
+        """
+        Devolve a entrada do cache se existir e ainda estiver válida.
+
+        As políticas da Places API isentam apenas o place_id das restrições de
+        cache; o restante do conteúdo não pode ser retido sem prazo. Entradas
+        vencidas são removidas na leitura e reconsultadas na API.
+
+        Entradas gravadas por versões anteriores não têm o carimbo "salvo_em" —
+        como não há como saber a idade delas, são tratadas como vencidas.
+
+        Returns:
+            Os dados do cache, ou None se ausente, vencido ou em formato antigo.
+        """
+        entrada = self._cache.get(chave)
+        if not isinstance(entrada, dict) or "salvo_em" not in entrada:
+            if entrada is not None:
+                logger.debug("Entrada de cache '%s' em formato antigo. Ignorando.", chave)
+                self._cache.pop(chave, None)
+            return None
+
+        try:
+            salvo_em = datetime.fromisoformat(entrada["salvo_em"])
+        except (TypeError, ValueError):
+            self._cache.pop(chave, None)
+            return None
+
+        if datetime.now(timezone.utc) - salvo_em > timedelta(days=CACHE_VALIDADE_DIAS):
+            logger.debug("Entrada de cache '%s' vencida. Reconsultando.", chave)
+            self._cache.pop(chave, None)
+            return None
+
+        return entrada["dados"]
 
     # ------------------------------------------------------------------
     # Orquestrador principal
@@ -365,6 +409,7 @@ class BuscadorProvedores:
         lng: float,
         raio: int,
         callback_progresso: Optional[Callable[[dict], None]] = None,
+        deve_cancelar: Optional[Callable[[], bool]] = None,
     ) -> list[dict]:
         """
         Busca provedores de internet usando todos os termos configurados.
@@ -386,6 +431,10 @@ class BuscadorProvedores:
                     "total_acumulado"  (int)  — total geral até o momento
                     "erro"             (str | None) — mensagem da falha, quando
                         a busca daquele termo não pôde ser concluída
+            deve_cancelar: Consultada entre termos e entre páginas. Quando
+                devolve True, a busca para e retorna o que já foi coletado —
+                o atributo `cancelado` fica marcado. Serve para interfaces em
+                que o usuário pode desistir no meio, evitando gastar cota à toa.
 
         Returns:
             Lista de dicts com os campos padronizados definidos em COLUNAS_SAIDA,
@@ -399,8 +448,15 @@ class BuscadorProvedores:
 
         self.ids_por_termo = {}
         self.requisicoes_por_termo = {}
+        self.cancelado = False
+        parar = deve_cancelar or (lambda: False)
 
         for i, termo in enumerate(TERMOS_DE_BUSCA, start=1):
+            if parar():
+                self.cancelado = True
+                logger.debug("Busca cancelada antes do termo '%s'.", termo)
+                break
+
             # Notifica o início da etapa (novos_provedores=None = ainda buscando)
             notificar({
                 "etapa": i,
@@ -412,7 +468,7 @@ class BuscadorProvedores:
             })
 
             try:
-                registros = self.buscar_por_termo(termo, lat, lng, raio)
+                registros = self.buscar_por_termo(termo, lat, lng, raio, parar)
             except (ConnectionError, ErroAPI) as exc:
                 notificar({
                     "etapa": i,
@@ -490,7 +546,12 @@ class BuscadorProvedores:
     # ------------------------------------------------------------------
 
     def buscar_por_termo(
-        self, termo: str, lat: float, lng: float, raio: int
+        self,
+        termo: str,
+        lat: float,
+        lng: float,
+        raio: int,
+        deve_cancelar: Optional[Callable[[], bool]] = None,
     ) -> list[dict]:
         """
         Busca um termo percorrendo todas as páginas disponíveis.
@@ -506,6 +567,10 @@ class BuscadorProvedores:
         paginas_lidas = 0
 
         for pagina in range(1, MAX_PAGINAS + 1):
+            if deve_cancelar and deve_cancelar():
+                self.cancelado = True
+                break
+
             # A API legada exige um atraso antes de usar o token da próxima
             # página; a nova aceita de imediato e declara intervalo zero.
             if token and self._cliente.intervalo_paginacao:

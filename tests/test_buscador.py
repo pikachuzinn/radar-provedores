@@ -16,6 +16,7 @@ from conftest import (
     LNG_CENTRO,
     PREFIXO_DETALHES_NOVO,
     RespostaFalsa,
+    entrada_cache,
     detalhes_legado,
     item_legado,
     lugar_novo,
@@ -88,7 +89,7 @@ def test_chave_vazia_e_rejeitada():
 def test_cache_hit_nao_chama_a_api(montar, sem_pausa):
     b, sessao = montar(
         {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API", -27.6, -48.5))},
-        cache_inicial={"novo:pid1": {"nome": "Do cache"}},
+        cache_inicial={"novo:pid1": entrada_cache({"nome": "Do cache"})},
     )
 
     assert b.obter_detalhes("pid1") == {"nome": "Do cache"}
@@ -100,7 +101,7 @@ def test_cache_hit_nao_dorme(montar, sem_pausa):
     A pausa de rate limit só faz sentido antes de uma chamada real.
     Dormir em cache hit anula o ganho de desempenho do próprio cache.
     """
-    b, _ = montar({}, cache_inicial={"novo:pid1": {"nome": "Do cache"}})
+    b, _ = montar({}, cache_inicial={"novo:pid1": entrada_cache({"nome": "Do cache"})})
     b.obter_detalhes("pid1")
     assert sem_pausa == []
 
@@ -139,7 +140,7 @@ def test_cache_novo_e_reaproveitado(montar, sem_pausa):
     b, sessao = montar(
         {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API nova", -27.6, -48.5))},
         usar_nova=True,
-        cache_inicial={"novo:pid1": {"nome": "Do cache novo"}},
+        cache_inicial={"novo:pid1": entrada_cache({"nome": "Do cache novo"})},
     )
 
     assert b.obter_detalhes("pid1")["nome"] == "Do cache novo"
@@ -518,3 +519,111 @@ def test_instrumentacao_reinicia_a_cada_busca(montar, sem_pausa, monkeypatch):
 
     assert b.ids_por_termo == primeira
     assert len(b.ids_por_termo) == 1
+
+
+# ---------------------------------------------------------------------------
+# Validade do cache
+# ---------------------------------------------------------------------------
+
+def test_entrada_de_cache_vencida_e_reconsultada(montar, sem_pausa):
+    """
+    As políticas da Places API isentam apenas o place_id das restrições de
+    cache; nome, telefone e site não podem ser retidos sem prazo.
+    """
+    b, sessao = montar(
+        {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API", -27.6, -48.5))},
+        cache_inicial={"novo:pid1": entrada_cache(
+            {"nome": "Antigo"}, dias_atras=mod.CACHE_VALIDADE_DIAS + 1
+        )},
+    )
+
+    assert b.obter_detalhes("pid1")["nome"] == "Da API"
+    assert len(sessao.chamadas) == 1
+
+
+def test_entrada_dentro_do_prazo_e_reaproveitada(montar, sem_pausa):
+    b, sessao = montar(
+        {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API", -27.6, -48.5))},
+        cache_inicial={"novo:pid1": entrada_cache(
+            {"nome": "Ainda válido"}, dias_atras=mod.CACHE_VALIDADE_DIAS - 1
+        )},
+    )
+
+    assert b.obter_detalhes("pid1")["nome"] == "Ainda válido"
+    assert sessao.chamadas == []
+
+
+def test_cache_sem_carimbo_de_tempo_e_descartado(montar, sem_pausa):
+    """Entradas de versões anteriores não têm idade conhecida — não dá para confiar."""
+    b, sessao = montar(
+        {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API", -27.6, -48.5))},
+        cache_inicial={"novo:pid1": {"nome": "Sem carimbo"}},
+    )
+
+    assert b.obter_detalhes("pid1")["nome"] == "Da API"
+
+
+def test_carimbo_corrompido_nao_quebra(montar, sem_pausa):
+    b, _ = montar(
+        {URL_PLACES_DETALHES: RespostaFalsa(lugar_novo("pid1", "Da API", -27.6, -48.5))},
+        cache_inicial={"novo:pid1": {"salvo_em": "data-invalida", "dados": {"nome": "X"}}},
+    )
+
+    assert b.obter_detalhes("pid1")["nome"] == "Da API"
+
+
+# ---------------------------------------------------------------------------
+# Cancelamento cooperativo
+# ---------------------------------------------------------------------------
+
+def test_cancelar_interrompe_entre_termos_e_devolve_o_parcial(montar, sem_pausa, monkeypatch):
+    """
+    Numa interface gráfica o usuário desiste no meio. Parar entre termos evita
+    gastar cota à toa, e o que já foi coletado continua válido.
+    """
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["a", "b", "c"])
+
+    b, sessao = montar(rotas_novas([lugar_novo("pid1", "Alfa", -27.6, -48.5)]))
+
+    # Imita o clique em "Cancelar": a desistência chega enquanto a busca roda,
+    # aqui logo depois que o primeiro termo termina.
+    desistiu = {"sim": False}
+
+    def ao_progredir(info):
+        if info["novos_provedores"] is not None:
+            desistiu["sim"] = True
+
+    provedores = b.buscar_todos(
+        LAT_CENTRO, LNG_CENTRO, raio=5000,
+        callback_progresso=ao_progredir,
+        deve_cancelar=lambda: desistiu["sim"],
+    )
+
+    assert b.cancelado is True
+    assert len(provedores) == 1                                  # resultado parcial
+    assert len(sessao.chamadas_para(URL_PLACES_BUSCA)) == 1      # só o primeiro termo
+
+
+def test_cancelar_interrompe_entre_paginas(montar, sem_pausa, monkeypatch):
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["termo"])
+    monkeypatch.setattr(mod, "MAX_PAGINAS", 3)
+
+    sempre_com_token = RespostaFalsa(
+        resposta_busca_nova([lugar_novo("pid", "Alfa", -27.6, -48.5)], "TOKEN")
+    )
+    b, sessao = montar({URL_PLACES_BUSCA: sempre_com_token})
+
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000, deve_cancelar=lambda: True)
+
+    assert b.cancelado is True
+    assert sessao.chamadas_para(URL_PLACES_BUSCA) == []
+
+
+def test_sem_cancelamento_a_busca_roda_inteira(montar, sem_pausa, monkeypatch):
+    monkeypatch.setattr(mod, "TERMOS_DE_BUSCA", ["a", "b"])
+    b, sessao = montar(rotas_novas([lugar_novo("pid1", "Alfa", -27.6, -48.5)]))
+
+    b.buscar_todos(LAT_CENTRO, LNG_CENTRO, raio=5000)
+
+    assert b.cancelado is False
+    assert len(sessao.chamadas_para(URL_PLACES_BUSCA)) == 2

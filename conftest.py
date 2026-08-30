@@ -131,6 +131,20 @@ class SessaoFalsa:
         return [c for c in self.chamadas if c.url.startswith(prefixo)]
 
 
+def entrada_cache(dados: dict, dias_atras: float = 0) -> dict:
+    """
+    Monta uma entrada de cache com a idade desejada.
+
+    O cache guarda um envelope {"salvo_em": ..., "dados": ...} para que
+    entradas vencidas possam ser descartadas — as políticas da Places API
+    não permitem reter conteúdo de lugares indefinidamente.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    salvo_em = datetime.now(timezone.utc) - timedelta(days=dias_atras)
+    return {"salvo_em": salvo_em.isoformat(), "dados": dados}
+
+
 def injetar_sessao(buscador, sessao: SessaoFalsa) -> SessaoFalsa:
     """
     Faz o buscador e o seu cliente usarem a sessão falsa.

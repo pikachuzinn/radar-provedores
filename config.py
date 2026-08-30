@@ -114,6 +114,15 @@ INTERVALO_PAGINACAO: float = 2.0
 # O cache evita chamadas repetidas à API para o mesmo place_id.
 CAMINHO_CACHE: str = ".cache_detalhes.json"
 
+# Validade das entradas de cache, em dias.
+# As políticas da Places API isentam apenas o place_id das restrições de cache:
+# ele pode ser guardado indefinidamente. O restante do conteúdo (nome, telefone,
+# site, avaliação) não pode ser retido sem prazo. Entradas mais antigas que este
+# valor são descartadas na leitura e reconsultadas.
+# Consulte os Termos de Serviço do Google Maps Platform para o limite aplicável
+# ao seu caso antes de aumentar este número.
+CACHE_VALIDADE_DIAS: int = 30
+
 # A cada quantas entradas novas o cache é gravado em disco durante a busca.
 # Gravar a cada entrada reescreve o arquivo inteiro N vezes; gravar apenas no
 # final arrisca perder tudo se a execução for interrompida. Este valor é o

@@ -25,7 +25,7 @@ from conftest import (
 from config import URL_GEOCODING, URL_PLACES_BUSCA
 
 CHAVES_DO_RETORNO = {"provedores", "arquivos", "total", "coordenadas", "erro",
-                     "analise_termos"}
+                     "analise_termos", "cancelado"}
 
 
 @pytest.fixture
