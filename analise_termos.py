@@ -237,3 +237,247 @@ def formatar_relatorio(analise: dict, requisicoes_totais: int | None = None) -> 
     linhas.append("─" * 72)
 
     return "\n".join(linhas)
+
+
+# ---------------------------------------------------------------------------
+# Consolidação entre cidades
+# ---------------------------------------------------------------------------
+
+# Separador usado para compor a chave (cidade, place_id). O caractere de
+# controle "unit separator" não aparece em nomes de cidade nem em place_ids
+# do Google, então não há risco de colisão com os dados reais.
+_SEPARADOR = "\x1f"
+
+
+def consolidar(
+    ids_por_cidade: dict[str, dict[str, set[str]]],
+    requisicoes_por_cidade: dict[str, dict[str, int]] | None = None,
+) -> dict:
+    """
+    Cruza a análise de várias cidades numa recomendação única e segura.
+
+    A sobreposição entre termos varia por região: um termo inútil numa capital
+    pode ser o único a encontrar algo no interior. Recomendar cortes a partir de
+    uma cidade só seria generalizar demais.
+
+    A consolidação trata cada par **(cidade, estabelecimento)** como um elemento
+    distinto a cobrir. Um termo só cobre uma empresa na cidade em que realmente
+    a encontrou — então o mesmo algoritmo de cobertura usado em analisar()
+    passa a garantir, por construção, que o conjunto recomendado reproduz o
+    resultado completo em **todas** as cidades medidas, e não só na média.
+
+    Args:
+        ids_por_cidade: {cidade: {termo: conjunto de place_ids}}.
+        requisicoes_por_cidade: {cidade: {termo: requisições}}, opcional.
+
+    Returns:
+        Dict com:
+            "cidades"      (dict) — {cidade: saída de analisar()}
+            "global"       (dict) — análise sobre os pares (cidade, place_id)
+            "termos"       (list[dict]) — visão agregada por termo:
+                termo, cidades_presente, cidades_essencial, cidades_dispensavel,
+                encontrados_total, exclusivos_total, requisicoes_total, dispensavel
+            "essenciais"   (list[str]) — termos a manter em config.py
+            "dispensaveis" (list[str]) — termos que podem sair, sem perda em
+                nenhuma das cidades medidas
+            "total_cidades" (int)
+    """
+    requisicoes_por_cidade = requisicoes_por_cidade or {}
+
+    # --- Análise individual, cidade a cidade ---
+    por_cidade = {
+        cidade: analisar(ids, requisicoes_por_cidade.get(cidade))
+        for cidade, ids in ids_por_cidade.items()
+    }
+
+    # --- Universo combinado: um elemento por (cidade, estabelecimento) ---
+    combinado: dict[str, set[str]] = {}
+    requisicoes_totais: dict[str, int] = {}
+
+    for cidade, ids_por_termo in ids_por_cidade.items():
+        reqs_da_cidade = requisicoes_por_cidade.get(cidade, {})
+        for termo, ids in ids_por_termo.items():
+            combinado.setdefault(termo, set()).update(
+                f"{cidade}{_SEPARADOR}{place_id}" for place_id in ids
+            )
+            requisicoes_totais[termo] = (
+                requisicoes_totais.get(termo, 0) + reqs_da_cidade.get(termo, 0)
+            )
+
+    analise_global = analisar(combinado, requisicoes_totais)
+
+    # --- Visão agregada por termo ---
+    essenciais = analise_global["essenciais"]
+    linhas = []
+
+    for termo in combinado:
+        presente = sum(
+            1 for a in por_cidade.values()
+            for l in a["termos"] if l["termo"] == termo and l["encontrados"] > 0
+        )
+        essencial_em = sum(1 for a in por_cidade.values() if termo in a["essenciais"])
+
+        # Dispensável ali é diferente de ausente ali. Em analisar(), um termo
+        # que não achou nada entra em "dispensaveis" — e está certo, no escopo
+        # daquela cidade cortá-lo não custa nada. Mas para sinalizar a armadilha
+        # do "medi uma cidade só" interessa apenas o caso em que o termo TROUXE
+        # resultado e mesmo assim ficou fora da cobertura; caso contrário o
+        # relatório alertaria sobre termos que nunca foram descartados de fato.
+        dispensavel_em = sum(
+            1 for a in por_cidade.values()
+            if termo in a["dispensaveis"]
+            and any(l["termo"] == termo and l["encontrados"] > 0 for l in a["termos"])
+        )
+        exclusivos = sum(
+            l["exclusivos"] for a in por_cidade.values()
+            for l in a["termos"] if l["termo"] == termo
+        )
+        encontrados = sum(
+            l["encontrados"] for a in por_cidade.values()
+            for l in a["termos"] if l["termo"] == termo
+        )
+
+        linhas.append({
+            "termo": termo,
+            "cidades_presente": presente,
+            "cidades_essencial": essencial_em,
+            "cidades_dispensavel": dispensavel_em,
+            "encontrados_total": encontrados,
+            "exclusivos_total": exclusivos,
+            "requisicoes_total": requisicoes_totais.get(termo, 0),
+            "dispensavel": termo in analise_global["dispensaveis"],
+        })
+
+    linhas.sort(key=lambda l: (-l["cidades_essencial"], -l["exclusivos_total"], l["termo"]))
+
+    return {
+        "cidades": por_cidade,
+        "global": analise_global,
+        "termos": linhas,
+        "essenciais": essenciais,
+        "dispensaveis": analise_global["dispensaveis"],
+        "total_cidades": len(ids_por_cidade),
+    }
+
+
+def formatar_relatorio_multi(consolidacao: dict, cidades_com_erro: dict | None = None) -> str:
+    """
+    Monta o relatório consolidado de várias cidades para exibição no terminal.
+
+    Args:
+        consolidacao: Saída de consolidar().
+        cidades_com_erro: {cidade: mensagem}, para relatar o que ficou de fora.
+    """
+    c = consolidacao
+    cidades_com_erro = cidades_com_erro or {}
+
+    if not c["termos"]:
+        return "Nenhum dado para consolidar."
+
+    linhas = []
+    linhas.append("")
+    linhas.append("═" * 76)
+    linhas.append(f"CALIBRAÇÃO DE TERMOS — {c['total_cidades']} cidade(s) medida(s)")
+    linhas.append("═" * 76)
+
+    # ---- Resumo por cidade ----
+    linhas.append("")
+    linhas.append("Por cidade:")
+    for cidade, analise in c["cidades"].items():
+        linhas.append(
+            f"  {cidade:<28} {analise['total_unico']:>4} empresas  "
+            f"{analise['redundancia']:>4.0%} de repetição  "
+            f"{len(analise['essenciais'])}/{len(analise['termos'])} termos essenciais"
+        )
+
+    for cidade, erro in cidades_com_erro.items():
+        linhas.append(f"  {cidade:<28} IGNORADA — {erro}")
+
+    # ---- Visão por termo ----
+    largura = min(max(len(l["termo"]) for l in c["termos"]), 42)
+    total = c["total_cidades"]
+
+    linhas.append("")
+    linhas.append(f"{'TERMO'.ljust(largura)}  {'ESSENC.':>8} {'ACHOU':>6} {'SÓ ELE':>7} {'REQS':>5}")
+    linhas.append(f"{'-' * largura}  {'-' * 8} {'-' * 6} {'-' * 7} {'-' * 5}")
+
+    for l in c["termos"]:
+        termo = l["termo"][:largura].ljust(largura)
+        marca = "  ← dispensável" if l["dispensavel"] else ""
+        linhas.append(
+            f"{termo}  {l['cidades_essencial']:>4}/{total:<3} "
+            f"{l['encontrados_total']:>6} {l['exclusivos_total']:>7} "
+            f"{l['requisicoes_total']:>5}{marca}"
+        )
+
+    linhas.append("")
+    linhas.append(f"  ESSENC. = em quantas das {total} cidades o termo entrou na cobertura mínima")
+    linhas.append("  ACHOU   = estabelecimentos trazidos, somando todas as cidades")
+    linhas.append("  SÓ ELE  = os que nenhum outro termo encontrou, somando as cidades")
+
+    # ---- Recomendação ----
+    linhas.append("")
+    if c["dispensaveis"]:
+        economia = sum(l["requisicoes_total"] for l in c["termos"] if l["dispensavel"])
+        total_reqs = sum(l["requisicoes_total"] for l in c["termos"])
+
+        linhas.append(
+            f"RECOMENDAÇÃO: manter {len(c['essenciais'])} dos "
+            f"{len(c['termos'])} termos."
+        )
+        linhas.append("")
+        linhas.append("TERMOS_DE_BUSCA: list[str] = [")
+        for termo in c["essenciais"]:
+            linhas.append(f'    "{termo}",')
+        linhas.append("]")
+        linhas.append("")
+        linhas.append("  Removidos:")
+        for termo in c["dispensaveis"]:
+            linhas.append(f"    ✗ {termo}")
+        if total_reqs:
+            linhas.append(
+                f"  Economia: {economia} de {total_reqs} requisições "
+                f"({economia / total_reqs:.0%}) nas cidades medidas."
+            )
+        linhas.append("")
+        linhas.append(
+            "  Este conjunto reproduz TODOS os estabelecimentos encontrados em "
+            "TODAS as cidades medidas — não é uma média."
+        )
+    else:
+        linhas.append(
+            "RECOMENDAÇÃO: todos os termos são necessários em pelo menos uma "
+            "das cidades. Mantenha a lista como está."
+        )
+
+    # ---- Termos que uma medição de cidade única cortaria por engano ----
+    # Critério exato: trouxe resultado e ficou fora da cobertura em pelo menos
+    # uma cidade, mas foi essencial em outra. Não basta ter cidades_essencial
+    # abaixo do total — o termo pode simplesmente não ter achado nada lá, o
+    # que é uma informação diferente.
+    enganosos = sorted(
+        (l for l in c["termos"]
+         if l["cidades_essencial"] >= 1 and l["cidades_dispensavel"] >= 1),
+        key=lambda l: l["cidades_essencial"],
+    )
+    if enganosos:
+        linhas.append("")
+        linhas.append(
+            "Cuidado ao medir uma cidade só — estes termos apareceram como "
+            "dispensáveis em uma região e essenciais em outra:"
+        )
+        for l in enganosos:
+            linhas.append(
+                f"    ! {l['termo']} — essencial em {l['cidades_essencial']}, "
+                f"dispensável em {l['cidades_dispensavel']} de {total}"
+            )
+
+    if cidades_com_erro:
+        linhas.append("")
+        linhas.append(
+            f"Atenção: {len(cidades_com_erro)} cidade(s) ficaram de fora da "
+            "consolidação. A recomendação só vale para as que foram medidas."
+        )
+
+    linhas.append("═" * 76)
+    return "\n".join(linhas)

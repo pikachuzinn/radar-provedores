@@ -62,7 +62,7 @@ Exemplo de uso em GUI (tkinter):
 import logging
 from typing import Callable, Optional
 
-from analise_termos import analisar
+from analise_termos import analisar, consolidar
 from buscador import BuscadorProvedores, ErroAPI, ErroLocalizacao
 from config import DIRETORIO_SAIDA, RAIO_PADRAO
 from exportador import exportar_resultados
@@ -203,4 +203,125 @@ def _erro(mensagem: str) -> dict:
         "coordenadas": None,
         "erro": mensagem,
         "analise_termos": {},
+    }
+
+
+def calibrar_termos(
+    api_key: str,
+    localizacoes: list,
+    raio: int = RAIO_PADRAO,
+    callback_cidade: Optional[Callable[[dict], None]] = None,
+    callback_progresso: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """
+    Roda a busca em várias localizações e consolida a análise de termos.
+
+    A sobreposição entre os termos varia por região — um termo inútil numa
+    capital pode ser o único a achar algo no interior. Medir várias cidades e
+    cruzar os resultados produz uma recomendação que vale para todas elas, e
+    não apenas para a média.
+
+    Reutiliza um único buscador entre as cidades, aproveitando a mesma sessão
+    HTTP e o mesmo cache. Uma cidade que falhe não interrompe as demais: o erro
+    é registrado e a consolidação segue com as que deram certo.
+
+    Não usa print() nem input().
+
+    Args:
+        api_key: Chave da Google Maps API.
+        localizacoes: Lista de endereços (str) e/ou coordenadas (tupla lat, lng).
+        raio: Raio de busca em metros, aplicado a todas as localizações.
+        callback_cidade: Chamado a cada cidade, com as chaves:
+            "indice" (int, 1-based), "total" (int), "cidade" (str),
+            "etapa" ("iniciando" | "concluida" | "erro"),
+            "total_encontrado" (int | None), "erro" (str | None).
+        callback_progresso: Repassado a buscar_todos, por termo.
+
+    Returns:
+        Dict com:
+            "consolidacao"          : dict | None — saída de consolidar()
+            "provedores_por_cidade" : {rotulo: list[dict]}
+            "cidades_com_erro"      : {rotulo: mensagem}
+            "erro"                  : str | None — falha que impediu tudo
+    """
+    notificar = callback_cidade or (lambda _: None)
+
+    if not api_key:
+        return _erro_calibracao("Chave de API não fornecida.")
+    if not localizacoes:
+        return _erro_calibracao("Nenhuma localização fornecida para calibração.")
+
+    ids_por_cidade: dict[str, dict] = {}
+    requisicoes_por_cidade: dict[str, dict] = {}
+    provedores_por_cidade: dict[str, list] = {}
+    cidades_com_erro: dict[str, str] = {}
+
+    with BuscadorProvedores(api_key=api_key) as buscador:
+        for indice, local in enumerate(localizacoes, start=1):
+            rotulo = _rotular(local)
+            notificar({
+                "indice": indice, "total": len(localizacoes), "cidade": rotulo,
+                "etapa": "iniciando", "total_encontrado": None, "erro": None,
+            })
+
+            try:
+                if isinstance(local, str):
+                    lat, lng = buscador.geocodificar(local)
+                else:
+                    lat, lng = local
+
+                provedores = buscador.buscar_todos(
+                    lat=lat, lng=lng, raio=raio,
+                    callback_progresso=callback_progresso,
+                )
+            except (ErroLocalizacao, ErroAPI, ConnectionError) as exc:
+                cidades_com_erro[rotulo] = str(exc)
+                notificar({
+                    "indice": indice, "total": len(localizacoes), "cidade": rotulo,
+                    "etapa": "erro", "total_encontrado": None, "erro": str(exc),
+                })
+                continue
+
+            # Cópia: os atributos do buscador são reiniciados na próxima cidade
+            ids_por_cidade[rotulo] = dict(buscador.ids_por_termo)
+            requisicoes_por_cidade[rotulo] = dict(buscador.requisicoes_por_termo)
+            provedores_por_cidade[rotulo] = provedores
+
+            notificar({
+                "indice": indice, "total": len(localizacoes), "cidade": rotulo,
+                "etapa": "concluida", "total_encontrado": len(provedores), "erro": None,
+            })
+
+    if not ids_por_cidade:
+        return {
+            "consolidacao": None,
+            "provedores_por_cidade": {},
+            "cidades_com_erro": cidades_com_erro,
+            "erro": "Nenhuma cidade pôde ser medida.",
+        }
+
+    return {
+        "consolidacao": consolidar(ids_por_cidade, requisicoes_por_cidade),
+        "provedores_por_cidade": provedores_por_cidade,
+        "cidades_com_erro": cidades_com_erro,
+        "erro": None,
+    }
+
+
+def _rotular(local) -> str:
+    """Nome legível de uma localização, para relatórios e chaves de dicionário."""
+    if isinstance(local, str):
+        return local
+    lat, lng = local
+    return f"{lat:.4f}, {lng:.4f}"
+
+
+def _erro_calibracao(mensagem: str) -> dict:
+    """Resultado padronizado para falhas que impedem a calibração inteira."""
+    logger.debug("calibrar_termos encerrado com erro: %s", mensagem)
+    return {
+        "consolidacao": None,
+        "provedores_por_cidade": {},
+        "cidades_com_erro": {},
+        "erro": mensagem,
     }

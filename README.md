@@ -19,7 +19,8 @@ Script Python para encontrar provedores de internet próximos a uma localizaçã
 - **Chave de API nunca exposta em logs** — filtro de logging automático mascara a chave em qualquer saída de debug, inclusive nos logs de bibliotecas de terceiros
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
 - **Relatório de sobreposição dos termos** (`--relatorio-termos`) — mostra quais termos de busca são redundantes, sem custar nenhuma requisição extra
-- **Suíte de testes** com 120 casos, sem dependência de rede nem de chave de API
+- **Calibração multi-cidade** (`calibrar_termos.py`) — cruza várias regiões e recomenda o conjunto de termos que serve a todas elas
+- **Suíte de testes** com 141 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -399,12 +400,76 @@ RECOMENDAÇÃO: 2 dos 5 termos bastam para os mesmos resultados nesta região.
 O conjunto sob "Manter" reproduz, por construção, todos os estabelecimentos
 que os cinco termos juntos encontraram.
 
-### Antes de cortar
+---
+
+## Calibração multi-cidade
 
 A sobreposição **varia por região**: um termo inútil numa capital pode ser o
-único a achar algo no interior. Rode o relatório em três ou quatro cidades
-representativas da sua área de atuação e só corte o que for dispensável em
-todas elas.
+único a encontrar algo no interior. Decidir o `TERMOS_DE_BUSCA` a partir de uma
+cidade só é generalizar demais.
+
+O `calibrar_termos.py` mede várias cidades, cruza os resultados e recomenda o
+menor conjunto de termos que reproduz o resultado completo em **todas** elas:
+
+```bash
+python calibrar_termos.py "Florianópolis, SC" "Itajaí, SC" "São Joaquim, SC" -r 10000
+```
+
+Escolha cidades que representem sua área de atuação — uma capital, uma cidade
+média e uma do interior costumam revelar as diferenças que importam.
+
+### Como a recomendação é calculada
+
+Cada elemento a cobrir é o par **(cidade, estabelecimento)**, e um termo só
+cobre uma empresa na cidade em que realmente a encontrou. Com isso, o mesmo
+algoritmo de cobertura garante por construção que o conjunto recomendado não
+perde nada em nenhuma das cidades — **não é uma média entre elas**.
+
+### Saída
+
+```
+TERMO                               ESSENC.  ACHOU  SÓ ELE  REQS
+provedor de internet                  2/3       18       4     3
+internet banda larga                  2/3       13       2     3
+provedor internet fibra óptica        2/3        6       2     3
+ISP internet service provider         0/3        1       0     3  ← dispensável
+empresa telecomunicações internet     0/3        3       0     3  ← dispensável
+
+RECOMENDAÇÃO: manter 3 dos 5 termos.
+
+TERMOS_DE_BUSCA: list[str] = [
+    "provedor de internet",
+    "provedor internet fibra óptica",
+    "internet banda larga",
+]
+
+  Economia: 6 de 15 requisições (40%) nas cidades medidas.
+
+Cuidado ao medir uma cidade só — estes termos apareceram como dispensáveis em
+uma região e essenciais em outra:
+    ! provedor de internet — essencial em 2, dispensável em 1 de 3
+```
+
+O bloco `TERMOS_DE_BUSCA` sai pronto para colar em `config.py`. O alerta final
+mostra exatamente quais termos uma medição de cidade única teria cortado por
+engano.
+
+### Custo e aproveitamento
+
+Cada cidade consome 1 chamada de Geocoding e até `termos × páginas`
+requisições de busca — com a configuração padrão, 15 por cidade. O total
+estimado é exibido **antes** de começar.
+
+Como a busca é paga, use `--exportar` para também salvar os provedores
+encontrados, em uma subpasta por cidade:
+
+```bash
+python calibrar_termos.py "Itajaí, SC" "Chapecó, SC" --exportar csv -o analises
+```
+
+Uma cidade que falhe (endereço não encontrado, erro de rede) não interrompe as
+demais: é registrada como ignorada, e o relatório avisa que a recomendação só
+vale para as cidades efetivamente medidas.
 
 ---
 
@@ -416,6 +481,7 @@ todas elas.
 buscador_provedores/
 │
 ├── main.py            # CLI e modo interativo — delega lógica ao service.py
+├── calibrar_termos.py # CLI de calibração multi-cidade dos termos de busca
 ├── service.py         # Camada de serviço sem I/O (Flask, GUI, testes)
 ├── buscador.py        # Orquestração: geocodificação, paginação, dedup, cache, logs
 ├── clientes.py        # Clientes HTTP das duas gerações da Places API
@@ -432,6 +498,7 @@ buscador_provedores/
 │   ├── test_cache.py
 │   ├── test_analise_termos.py
 │   ├── test_buscador.py
+│   ├── test_calibracao.py
 │   ├── test_clientes.py
 │   ├── test_exportador.py
 │   ├── test_filtro_log.py
@@ -540,6 +607,7 @@ python -m pytest tests/test_buscador.py
 | `test_cache.py` | Arquivo ausente, JSON corrompido, formato inesperado, acentuação |
 | `test_clientes.py` | Forma da requisição, cabeçalhos, field mask, mapeamento de erros e tradução de payload de cada geração |
 | `test_analise_termos.py` | Contribuição exclusiva, cobertura gulosa e a armadilha dos termos coletivamente necessários |
+| `test_calibracao.py` | Consolidação entre cidades, cidades com erro, e o invariante de cobertura por região |
 | `test_buscador.py` | Paginação, deduplicação, gravação em lote do cache, filtro de raio, callback de progresso |
 | `test_filtro_log.py` | Mascaramento da chave vinda de loggers filhos e remoção do filtro ao encerrar |
 | `test_exportador.py` | Ordem das colunas, BOM do CSV, campos ausentes, formatação do Excel |
