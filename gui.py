@@ -32,10 +32,11 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import assistente
 import credenciais
 from analise_termos import formatar_relatorio_multi
 from config import DIRETORIO_SAIDA, MAX_PAGINAS, RAIO_PADRAO, TERMOS_DE_BUSCA
-from service import calibrar_termos, executar_busca
+from service import calibrar_termos, executar_busca, testar_chave
 
 TITULO = "Buscador de Provedores de Internet"
 CREDITO = "Dados de estabelecimentos: Google Maps"
@@ -132,6 +133,13 @@ class Aplicacao(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self.after(120, self._drenar_fila)
 
+        # Sem chave configurada, este é o primeiro uso: conduz a configuração
+        # em vez de deixar a pessoa diante de um erro que ela não sabe resolver.
+        # O agendamento espera a janela principal aparecer, para que o
+        # assistente seja centralizado sobre ela.
+        if not credenciais.carregar_chave()[0]:
+            self.after(300, self._abrir_assistente)
+
     # ------------------------------------------------------------------
     # Construção da interface
     # ------------------------------------------------------------------
@@ -164,6 +172,9 @@ class Aplicacao(tk.Tk):
 
         ttk.Button(quadro, text="Salvar", command=self._salvar_chave).grid(row=0, column=3, padx=4)
         ttk.Button(quadro, text="Testar", command=self._testar_chave).grid(row=0, column=4)
+        ttk.Button(
+            quadro, text="Assistente...", command=self._abrir_assistente
+        ).grid(row=0, column=5, padx=(4, 0))
 
         self.rotulo_chave = ttk.Label(quadro, text="", style="Discreto.TLabel")
         self.rotulo_chave.grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
@@ -403,8 +414,8 @@ class Aplicacao(tk.Tk):
         else:
             self.rotulo_chave.configure(
                 text=(
-                    "Nenhuma chave encontrada. Cole a sua chave acima e clique em Salvar. "
-                    "Veja o README para criar uma no Google Cloud Console."
+                    "Nenhuma chave configurada. Clique em Assistente... para criar "
+                    "a sua no Google Cloud, passo a passo."
                 ),
                 style="Erro.TLabel",
             )
@@ -450,16 +461,17 @@ class Aplicacao(tk.Tk):
         self.rotulo_chave.configure(text="Testando a chave...", style="Discreto.TLabel")
         self.update_idletasks()
 
-        def tarefa():
-            from buscador import BuscadorProvedores
-            try:
-                with BuscadorProvedores(api_key=chave) as buscador:
-                    buscador.geocodificar("Florianópolis, SC")
-                self._fila.put(("chave_ok", None))
-            except Exception as exc:                      # noqa: BLE001 — vai para a tela
-                self._fila.put(("chave_erro", str(exc)))
+        threading.Thread(
+            target=lambda: self._fila.put(("teste_chave", testar_chave(chave))),
+            daemon=True,
+        ).start()
 
-        threading.Thread(target=tarefa, daemon=True).start()
+    def _abrir_assistente(self) -> None:
+        """Conduz a criação da chave no Google Cloud, passo a passo."""
+        chave = assistente.executar(self)
+        if chave:
+            self.var_chave.set(chave)
+            self._carregar_chave_existente()
 
     # ------------------------------------------------------------------
     # Busca
@@ -731,12 +743,12 @@ class Aplicacao(tk.Tk):
         elif evento == "falha":
             self._definir_ocupado(False, "Falhou.")
             messagebox.showerror(TITULO, dado)
-        elif evento == "chave_ok":
+        elif evento == "teste_chave":
+            ok, mensagem = dado
             self.rotulo_chave.configure(
-                text="Chave válida — Geocoding API respondeu corretamente.", style="Ok.TLabel"
+                text=("✔ " if ok else "✘ ") + mensagem,
+                style="Ok.TLabel" if ok else "Erro.TLabel",
             )
-        elif evento == "chave_erro":
-            self.rotulo_chave.configure(text=f"Chave recusada: {dado}", style="Erro.TLabel")
 
     def _evento_progresso(self, info: dict) -> None:
         if info.get("erro"):

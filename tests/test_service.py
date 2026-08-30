@@ -228,3 +228,51 @@ def test_analise_e_serializavel_em_json(api_falsa, tmp_path):
         diretorio=str(tmp_path / "saida"),
     )
     json.dumps(resultado["analise_termos"])   # não deve levantar
+
+
+# ---------------------------------------------------------------------------
+# Verificação da chave
+# ---------------------------------------------------------------------------
+
+def test_testar_chave_sem_chave_nao_toca_na_rede():
+    ok, mensagem = service.testar_chave("   ")
+    assert ok is False
+    assert "Nenhuma chave" in mensagem
+
+
+def test_testar_chave_aprova_quando_a_geocodificacao_responde(servico_falso, payload_geocoding):
+    sessoes = servico_falso({URL_GEOCODING: RespostaFalsa(payload_geocoding)})
+
+    ok, mensagem = service.testar_chave(CHAVE)
+
+    assert ok is True
+    assert "aceita" in mensagem
+    assert sessoes[0].fechada
+
+
+def test_testar_chave_reprova_com_o_motivo_da_api(servico_falso):
+    sessoes = servico_falso({URL_GEOCODING: RespostaFalsa({"status": "REQUEST_DENIED"})})
+
+    ok, mensagem = service.testar_chave(CHAVE)
+
+    assert ok is False
+    assert "inválida ou sem permissão" in mensagem
+    assert sessoes[0].fechada
+
+
+def test_testar_chave_distingue_falha_de_rede(servico_falso):
+    import requests
+    servico_falso({URL_GEOCODING: RespostaFalsa({}, erro=requests.ConnectionError())})
+
+    ok, mensagem = service.testar_chave(CHAVE)
+
+    assert ok is False
+    assert "Sem conexão" in mensagem
+
+
+def test_endereco_de_teste_nao_encontrado_nao_reprova_a_chave(servico_falso):
+    """Se a API respondeu ZERO_RESULTS, ela aceitou a chave — o resto é detalhe."""
+    servico_falso({URL_GEOCODING: RespostaFalsa({"status": "ZERO_RESULTS"})})
+
+    ok, _ = service.testar_chave(CHAVE)
+    assert ok is True

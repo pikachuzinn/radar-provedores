@@ -337,3 +337,39 @@ def _erro_calibracao(mensagem: str) -> dict:
         "cidades_com_erro": {},
         "erro": mensagem,
     }
+
+
+def testar_chave(api_key: str) -> tuple[bool, str]:
+    """
+    Verifica se a chave funciona, com uma única chamada de Geocoding.
+
+    Serve para dar um retorno imediato na interface, em vez de deixar o
+    usuário descobrir o problema no meio de uma busca. Usa a Geocoding API,
+    que tem 10.000 chamadas gratuitas por mês — o custo é irrelevante.
+
+    Não levanta exceção: o resultado vem sempre como par (ok, mensagem).
+
+    Args:
+        api_key: Chave a verificar.
+
+    Returns:
+        (True, mensagem de sucesso) ou (False, motivo da recusa).
+    """
+    if not api_key.strip():
+        return False, "Nenhuma chave informada."
+
+    try:
+        with BuscadorProvedores(api_key=api_key) as buscador:
+            buscador.geocodificar("Florianópolis, SC")
+    except ErroAPI as exc:
+        return False, str(exc)
+    except ConnectionError as exc:
+        return False, f"Sem conexão para verificar a chave: {exc}"
+    except ErroLocalizacao:
+        # A chave funcionou; o endereço de teste é que não foi encontrado —
+        # improvável, mas não é motivo para reprovar a chave.
+        return True, "Chave aceita pela Geocoding API."
+    except Exception as exc:                              # noqa: BLE001
+        return False, f"Falha inesperada ao verificar a chave: {exc}"
+
+    return True, "Chave aceita pela Geocoding API."

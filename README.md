@@ -14,6 +14,7 @@ python main.py -e "Itajaí, SC" -r 10000    # terminal
 ## Funcionalidades
 
 - **Interface gráfica** em tkinter, sem dependências extras, empacotável em executável único
+- **Assistente de primeira execução** que conduz a criação da chave no Google Cloud e a verifica ao final
 - Usa a **Places API (New)** por padrão, com suporte à API legada para projetos antigos
 - Aceita endereço textual ou coordenadas geográficas como entrada
 - Busca provedores num raio configurável (padrão: 5 km)
@@ -28,7 +29,7 @@ python main.py -e "Itajaí, SC" -r 10000    # terminal
 - Tratamento claro de erros (endereço não encontrado, chave inválida, falha de rede)
 - **Relatório de sobreposição dos termos** (`--relatorio-termos`) — mostra quais termos de busca são redundantes, sem custar nenhuma requisição extra
 - **Calibração multi-cidade** (`calibrar_termos.py`) — cruza várias regiões e recomenda o conjunto de termos que serve a todas elas
-- **Suíte de testes** com 177 casos, sem dependência de rede nem de chave de API
+- **Suíte de testes** com 196 casos, sem dependência de rede nem de chave de API
 
 ---
 
@@ -507,6 +508,31 @@ que já foi encontrado é preservado.
 estimado antes de rodar e um botão que copia o bloco `TERMOS_DE_BUSCA` pronto
 para colar em `config.py`.
 
+### Assistente de primeira execução
+
+Na primeira vez que a janela abre sem nenhuma chave configurada, o assistente
+aparece sozinho e conduz a configuração em cinco etapas, com botões que abrem a
+página exata do Google Cloud Console em cada uma:
+
+1. **Antes de começar** — o que será feito, quanto tempo leva e qual a cota gratuita
+2. **Projeto e faturamento** — criar o projeto e ativar o faturamento
+3. **Ativar as duas APIs** — Places API (New) e Geocoding API
+4. **Criar a chave** — gerar e restringir
+5. **Colar e verificar** — testa a chave de verdade antes de concluir
+
+Ele existe para evitar os três tropeços que respondem por quase todo o suporte:
+
+| Tropeço | O que acontece |
+|---|---|
+| Não ativar o faturamento | É obrigatório mesmo para usar só a cota gratuita. Sem ele, toda chamada é recusada |
+| Ativar "Places API" em vez de "Places API (New)" | São produtos distintos no Console, com nomes quase iguais. Os botões do assistente já levam à página certa |
+| Restringir a chave às APIs erradas | Produz o mesmo erro de uma chave inválida, o que despista |
+
+O assistente pode ser reaberto a qualquer momento pelo botão **Assistente...**,
+ao lado do campo da chave, e pulado por quem já tem tudo pronto.
+
+### Onde a chave fica guardada
+
 A chave de API fica no topo da janela. Ao salvar, ela vai para a pasta de
 configuração do seu usuário — não para a pasta do programa, que em instalações
 corporativas costuma ser somente leitura:
@@ -543,10 +569,10 @@ Não embuta uma chave no executável. Qualquer pessoa que receba o arquivo
 consegue extraí-la, todo o consumo cai numa conta só, e não há como saber quem
 gastou nem revogar o acesso de um usuário específico sem derrubar o de todos.
 
-O programa foi feito para o outro caminho: na primeira execução, cada pessoa
-cola a própria chave, que fica gravada na pasta de configuração dela. Para
-facilitar, oriente a equipe a seguir o passo a passo de *Como obter a chave de
-API do Google Maps*, mais acima neste documento.
+O programa foi feito para o outro caminho: na primeira execução, o assistente
+abre sozinho e conduz cada pessoa até a própria chave, que fica gravada na
+pasta de configuração dela. Na prática, entregar o executável basta — não é
+preciso escrever instruções nem acompanhar a instalação um a um.
 
 Se a empresa preferir centralizar o custo, o caminho no Google Cloud é criar
 uma chave por pessoa dentro do mesmo projeto de faturamento — assim o gasto
@@ -576,6 +602,7 @@ individualmente.
 buscador_provedores/
 │
 ├── gui.py             # Interface gráfica (tkinter)
+├── assistente.py      # Assistente de primeira execução (criação da chave)
 ├── main.py            # CLI e modo interativo — delega lógica ao service.py
 ├── calibrar_termos.py # CLI de calibração multi-cidade dos termos de busca
 ├── credenciais.py     # Onde a chave de API é procurada e guardada
@@ -596,6 +623,7 @@ buscador_provedores/
 │   ├── test_cache.py
 │   ├── test_analise_termos.py
 │   ├── test_buscador.py
+│   ├── test_assistente.py
 │   ├── test_calibracao.py
 │   ├── test_clientes.py
 │   ├── test_credenciais.py
@@ -715,6 +743,7 @@ python -m pytest tests/test_buscador.py
 | `test_service.py` | Contrato de retorno, caminhos de erro, ausência de vazamento entre chamadas |
 | `test_credenciais.py` | Prioridade das origens da chave, gravação sem destruir o `.env`, permissão do arquivo |
 | `test_gui.py` | Ordenação da tabela, comando de abrir pasta, mensagens de erro |
+| `test_assistente.py` | Destino dos links do Console e presença dos avisos que evitam suporte |
 
 Cada correção e cada garantia da migração foi validada por **teste de mutação**:
 reintroduzir o defeito no código faz a suíte falhar. Um teste que passa nos dois
