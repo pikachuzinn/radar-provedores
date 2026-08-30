@@ -40,7 +40,12 @@ from config import DIRETORIO_SAIDA, MAX_PAGINAS, RAIO_PADRAO, TERMOS_DE_BUSCA
 from service import calibrar_termos, executar_busca, testar_chave
 
 TITULO = "Buscador de Provedores de Internet"
-CREDITO = "Dados de estabelecimentos: Google Maps"
+
+# Crédito exigido pelas políticas do Google ao exibir dados de Places fora de
+# um mapa do Google, e aviso de copyright do próprio programa. A cláusula 2(e)
+# da licença proíbe removê-los da interface.
+CREDITO_GOOGLE = "Dados de estabelecimentos: Google Maps"
+COPYRIGHT = "© 2026 Henan Heiiji Shirahige — todos os direitos reservados"
 
 # Colunas exibidas na tabela. As demais vão para o arquivo exportado — mostrar
 # tudo em tela deixaria as colunas estreitas demais para serem úteis.
@@ -396,9 +401,9 @@ class Aplicacao(tk.Tk):
     def _montar_rodape(self) -> None:
         rodape = ttk.Frame(self, padding=(12, 4))
         rodape.pack(fill="x")
-        # Crédito exigido pelas políticas do Google ao exibir dados de Places
-        # fora de um mapa do Google. Não remover.
-        ttk.Label(rodape, text=CREDITO, style="Discreto.TLabel").pack(side="left")
+        ttk.Label(rodape, text=COPYRIGHT, style="Discreto.TLabel").pack(side="left")
+        ttk.Label(rodape, text="  ·  ", style="Discreto.TLabel").pack(side="left")
+        ttk.Label(rodape, text=CREDITO_GOOGLE, style="Discreto.TLabel").pack(side="left")
         self.rotulo_status = ttk.Label(rodape, text="", style="Discreto.TLabel")
         self.rotulo_status.pack(side="right")
 

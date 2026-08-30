@@ -70,4 +70,13 @@ def test_credito_do_google_esta_definido():
     As políticas exigem crédito visível ao exibir dados de Places fora de um
     mapa do Google. O rodapé usa esta constante.
     """
-    assert "Google Maps" in gui.CREDITO
+    assert "Google Maps" in gui.CREDITO_GOOGLE
+
+
+def test_aviso_de_copyright_esta_na_interface():
+    """
+    A cláusula 2(e) da licença proíbe remover avisos de copyright da interface.
+    Para a cláusula valer, o aviso precisa existir.
+    """
+    assert "Henan Heiiji Shirahige" in gui.COPYRIGHT
+    assert "direitos reservados" in gui.COPYRIGHT.lower()

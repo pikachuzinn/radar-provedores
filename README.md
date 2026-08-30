@@ -834,4 +834,21 @@ abrir chamado, mas fica em segundo plano porque sozinha ela confunde.
 
 ## Licença
 
-Uso interno. Consulte os [Termos de Uso da Google Maps Platform](https://cloud.google.com/maps-platform/terms) antes de redistribuir os dados coletados.
+Software proprietário. Todos os direitos reservados — ver [LICENSE](LICENSE).
+
+O código-fonte estar em repositório público serve à consulta e ao
+acompanhamento do desenvolvimento, e **não** constitui licença de uso, cópia
+ou redistribuição. Autorizações de uso são concedidas por escrito pelo titular.
+
+Dois pontos que a licença ressalva e valem destaque:
+
+- **Os dados não são nossos.** Os estabelecimentos retornados pela API
+  pertencem ao Google e são regidos pelos
+  [Termos da Google Maps Platform](https://cloud.google.com/maps-platform/terms),
+  não por esta licença. Limites de cache, atribuição visível e restrições de
+  redistribuição continuam valendo para quem usa o programa.
+- **Cada usuário traz a própria credencial.** O Software não embute nem
+  compartilha chaves de API.
+
+As bibliotecas de terceiros mantêm suas licenças originais, relacionadas no
+Anexo I do arquivo LICENSE.

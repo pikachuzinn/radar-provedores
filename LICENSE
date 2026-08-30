@@ -1,0 +1,145 @@
+LICENÇA DE SOFTWARE PROPRIETÁRIO
+
+Buscador de Provedores de Internet
+Copyright (c) 2026 Henan Heiiji Shirahige
+Todos os direitos reservados.
+
+
+1. TITULARIDADE
+
+Este software, incluindo seu código-fonte, documentação, arquivos de
+configuração e materiais associados (doravante "o Software"), é propriedade
+exclusiva do titular do copyright acima identificado e está protegido pela
+Lei nº 9.610/1998 (Direitos Autorais) e pela Lei nº 9.609/1998 (Programa de
+Computador), bem como por tratados internacionais aplicáveis.
+
+
+2. RESTRIÇÕES
+
+Salvo autorização prévia e por escrito do titular, é vedado a qualquer pessoa
+física ou jurídica:
+
+  a) reproduzir, copiar ou armazenar o Software, no todo ou em parte;
+  b) distribuir, sublicenciar, alugar, emprestar, ceder, vender ou de qualquer
+     forma transferir o Software a terceiros;
+  c) criar obras derivadas, adaptações ou modificações a partir do Software;
+  d) publicar o Software ou trechos dele em repositórios, sítios eletrônicos
+     ou quaisquer meios de acesso público;
+  e) remover, ocultar ou alterar avisos de copyright, de autoria ou de
+     atribuição presentes no Software ou em sua interface.
+
+A disponibilização do código-fonte em repositório de acesso público, quando
+houver, destina-se a fins de consulta, auditoria e acompanhamento do
+desenvolvimento, e NÃO constitui licença de uso, cópia ou redistribuição.
+
+
+3. USO AUTORIZADO
+
+O titular pode conceder autorizações de uso individuais ou corporativas,
+mediante instrumento escrito que definirá prazo, número de usuários, escopo e
+demais condições.
+
+Cada usuário autorizado deve utilizar credencial própria de acesso à Google
+Maps Platform, obtida em conta de sua titularidade ou da organização à qual
+esteja vinculado. O Software não fornece, não compartilha e não embute
+credenciais de acesso a serviços de terceiros.
+
+
+4. ENGENHARIA REVERSA
+
+É vedada a descompilação, desmontagem ou engenharia reversa do Software,
+ressalvadas as hipóteses expressamente permitidas em lei que não possam ser
+afastadas por acordo entre as partes.
+
+
+5. DADOS OBTIDOS DE TERCEIROS
+
+O Software consulta a Google Maps Platform. Os dados de estabelecimentos
+retornados por essa API NÃO são de titularidade do detentor do copyright deste
+Software e NÃO são licenciados por este instrumento.
+
+O uso, o armazenamento e a eventual redistribuição desses dados são regidos
+exclusivamente pelos Termos de Serviço do Google Maps Platform, disponíveis em
+https://cloud.google.com/maps-platform/terms, e pelas políticas da Places API.
+
+Cabe a cada usuário observar, entre outras obrigações: os limites de cache e
+retenção de conteúdo, a exigência de atribuição visível ao exibir dados fora
+de um mapa do Google, e as restrições quanto à redistribuição em massa. Nada
+nesta licença autoriza uso dos dados além do que o Google permite.
+
+
+6. COMPONENTES DE TERCEIROS
+
+O Software utiliza bibliotecas de terceiros, cada qual regida por sua própria
+licença, que permanecem em vigor e não são alteradas por este instrumento. A
+relação consta do Anexo I.
+
+
+7. AUSÊNCIA DE GARANTIA
+
+O SOFTWARE É FORNECIDO "NO ESTADO EM QUE SE ENCONTRA", SEM GARANTIA DE
+QUALQUER NATUREZA, EXPRESSA OU IMPLÍCITA, INCLUINDO, SEM LIMITAÇÃO, GARANTIAS
+DE COMERCIALIZAÇÃO, ADEQUAÇÃO A FINALIDADE ESPECÍFICA E NÃO VIOLAÇÃO.
+
+O titular não garante que os resultados das buscas sejam completos, exatos ou
+atualizados. Os dados dependem do cadastro mantido por terceiros no Google
+Maps e da cobertura da região consultada. Decisões de negócio tomadas com base
+nos resultados são de responsabilidade exclusiva de quem as toma.
+
+
+8. LIMITAÇÃO DE RESPONSABILIDADE
+
+Na máxima extensão permitida pela legislação aplicável, o titular não responde
+por danos diretos, indiretos, incidentais, especiais, punitivos ou emergentes,
+incluindo lucros cessantes, perda de dados, interrupção de atividades ou
+custos incorridos junto a provedores de serviços de terceiros — notadamente
+cobranças da Google Maps Platform decorrentes do uso do Software —, ainda que
+o titular tenha sido avisado da possibilidade de tais danos.
+
+
+9. VIGÊNCIA E RESCISÃO
+
+Qualquer autorização de uso concedida extingue-se automaticamente, e
+independentemente de notificação, em caso de descumprimento de qualquer
+cláusula desta licença. Extinta a autorização, o usuário deve cessar o uso e
+eliminar todas as cópias do Software em seu poder.
+
+
+10. LEGISLAÇÃO E FORO
+
+Esta licença é regida pelas leis da República Federativa do Brasil. Fica
+eleito o foro da comarca de domicílio do titular para dirimir controvérsias
+decorrentes deste instrumento, com renúncia a qualquer outro, por mais
+privilegiado que seja.
+
+
+Contato para solicitação de autorização de uso:
+hieigameryt25@gmail.com
+
+
+================================================================================
+ANEXO I — COMPONENTES DE TERCEIROS
+================================================================================
+
+As bibliotecas abaixo são distribuídas sob suas próprias licenças, integralmente
+preservadas. Os textos completos acompanham cada pacote instalado.
+
+  Componente            Licença           Uso no Software
+  --------------------  ----------------  ---------------------------------
+  Python (tkinter)      PSF License       Linguagem e interface gráfica
+  requests              Apache-2.0        Chamadas HTTP à API do Google
+  urllib3               MIT               Dependência de requests
+  certifi               MPL-2.0           Certificados raiz TLS
+  charset-normalizer    MIT               Dependência de requests
+  idna                  BSD-3-Clause      Dependência de requests
+  python-dotenv         BSD-3-Clause      Leitura do arquivo .env
+  openpyxl              MIT               Exportação para .xlsx
+  et-xmlfile            MIT               Dependência de openpyxl
+  pytest                MIT               Testes (não distribuído)
+  PyInstaller           GPL-2.0-or-later  Geração do executável
+                        com exceção
+
+Observação sobre o PyInstaller: sua licença contém exceção expressa que
+autoriza o uso da ferramenta para gerar e distribuir programas não livres,
+inclusive comerciais. O executável produzido não fica sujeito à GPL por esse
+motivo.
